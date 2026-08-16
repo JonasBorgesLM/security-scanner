@@ -1,0 +1,21 @@
+schema_version: 1
+target:
+  base_url: http://localhost:8080
+scope:
+  allowed_hosts: ["localhost:8080"]
+auth:
+  login_endpoint: /login
+  credentials:
+    username: admin
+    # Secrets are written as ${SOME_UNSET_VARIABLE_NAME} and read from the
+    # environment. This sentence is documentation — nothing here should be
+    # resolved, and the scanner must not demand that variable exist.
+    password: ${SCANNER_TEST_LAB_PASSWORD}
+  token_path: data.access_token
+engine:
+  max_concurrency: 5
+  requests_per_second: 10
+  timeout: 5m
+checks:
+  # Another mention of ${ANOTHER_UNSET_VARIABLE} for good measure.
+  enabled: [missing-headers]

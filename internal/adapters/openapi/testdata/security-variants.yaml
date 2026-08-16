@@ -1,0 +1,63 @@
+openapi: 3.0.3
+info:
+  title: Security Variants
+  version: "1.0"
+paths:
+  # A single requirement listing two schemes: AND semantics. Only one name
+  # fits model.Endpoint.SecurityScheme, so the parser must pick the same one
+  # every run instead of relying on map iteration order.
+  /combined:
+    get:
+      operationId: combined
+      security:
+        - apiKeyAuth: []
+          bearerAuth: []
+          zzzLastAlphabetically: []
+      responses:
+        "200":
+          description: OK
+  # Alternatives: OR semantics. The first entry wins.
+  /alternatives:
+    get:
+      operationId: alternatives
+      security:
+        - bearerAuth: []
+        - apiKeyAuth: []
+      responses:
+        "200":
+          description: OK
+  # An empty requirement makes auth optional — the route is reachable with
+  # no credentials, so the scanner treats it as public.
+  /optional-auth:
+    get:
+      operationId: optionalAuth
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+  # Same thing, with the empty alternative listed last: position must not
+  # change the verdict.
+  /optional-auth-last:
+    get:
+      operationId: optionalAuthLast
+      security:
+        - bearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: OK
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    zzzLastAlphabetically:
+      type: apiKey
+      in: header
+      name: X-Other

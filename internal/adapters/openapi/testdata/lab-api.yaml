@@ -1,0 +1,85 @@
+openapi: 3.0.3
+info:
+  title: Lab API
+  version: "1.0"
+servers:
+  - url: http://localhost:8080
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      security: []
+      responses:
+        "200":
+          description: OK
+  /items:
+    get:
+      operationId: listItems
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+    post:
+      operationId: createItem
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  type: string
+                price:
+                  type: number
+      responses:
+        "201":
+          description: Created
+  /items/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getItem
+      responses:
+        "200":
+          description: OK
+    put:
+      operationId: updateItem
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                price:
+                  type: number
+      responses:
+        "200":
+          description: OK
+    delete:
+      operationId: deleteItem
+      responses:
+        "204":
+          description: No Content
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

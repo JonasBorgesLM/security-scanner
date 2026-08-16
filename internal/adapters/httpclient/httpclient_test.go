@@ -77,6 +77,23 @@ func TestClient_Do_BlockedHostNeverReachesServer(t *testing.T) {
 	}
 }
 
+func TestNew_NilHTTPClientFallsBackToDefault(t *testing.T) {
+	guard := scope.NewScopeGuard([]string{"localhost:8080"})
+
+	if got := New(guard, nil).httpClient; got != http.DefaultClient {
+		t.Errorf("httpClient = %p, want http.DefaultClient (%p)", got, http.DefaultClient)
+	}
+}
+
+func TestNew_KeepsSuppliedHTTPClient(t *testing.T) {
+	guard := scope.NewScopeGuard([]string{"localhost:8080"})
+	custom := &http.Client{}
+
+	if got := New(guard, custom).httpClient; got != custom {
+		t.Errorf("httpClient = %p, want the supplied client (%p)", got, custom)
+	}
+}
+
 func TestNew_PanicsOnNilGuard(t *testing.T) {
 	defer func() {
 		if recover() == nil {

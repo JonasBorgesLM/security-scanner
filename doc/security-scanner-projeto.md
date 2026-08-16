@@ -35,12 +35,13 @@ Arquivos intermediários são o contrato entre estágios: versionáveis no git, 
 
 ```
 security-scanner/
-├── cmd/scanner/main.go            # CLI: scan | attack | report
+├── cmd/scanner/main.go            # CLI + composition root: scan | attack | report
 ├── internal/
 │   ├── ports/                     # interfaces: HTTPClient, Reporter, Store
 │   ├── adapters/
 │   │   ├── httpclient/            # cliente real + ScopeGuard middleware
-│   │   └── openapi/               # parser de spec → []Endpoint
+│   │   ├── openapi/               # parser de spec → []Endpoint
+│   │   └── config/                # leitura + validação do config.yaml
 │   ├── core/
 │   │   ├── model/                 # Endpoint, Finding, Evidence, Report
 │   │   ├── engine/                # worker pool + rate limiter + orquestração
@@ -52,13 +53,20 @@ security-scanner/
 │   │   ├── secrets.go             # passivo
 │   │   ├── sqli.go                # ativo
 │   │   └── xss.go                 # ativo
+│   ├── envexpand/                 # expansão de ${VAR} compartilhada
 │   └── report/                    # templates HTML + writer JSON
 ├── payloads/                      # go:embed — sqli.txt, xss.txt
 ├── configs/
-│   ├── config.yaml
-│   └── scope.yaml
+│   └── config.yaml                # exemplo comentado (escopo incluso, sem scope.yaml)
 └── testdata/                      # specs e responses fake p/ testes
 ```
+
+**Composition root.** `cmd/scanner` é o único lugar que escolhe adapters concretos.
+Os pacotes de `core/` recebem um `ports.HTTPClient` e, por construção, não podem
+verificar qual implementação chegou — então a garantia de que todo mundo recebeu o
+cliente com `ScopeGuard` mora ali, e só ali. Entregar um `*http.Client` cru a
+qualquer componente desligaria a fronteira de segurança sem quebrar compilação nem
+teste.
 
 ### Decisões-chave (validadas)
 
@@ -143,7 +151,11 @@ type Evidence struct {
 
 ---
 
-## 6. Config (rascunho)
+## 6. Config
+
+Formato implementado em `internal/adapters/config`. O arquivo de exemplo comentado
+vive em `configs/config.yaml` — **não existe `scope.yaml` separado**, o escopo é a
+seção `scope:` deste mesmo arquivo.
 
 ```yaml
 schema_version: 1
@@ -153,12 +165,12 @@ scope:
   allowed_hosts: ["localhost:8080", "127.0.0.1:8080"]
 auth:
   login_endpoint: /login
-  method: POST
+  method: POST                    # opcional, default POST
   credentials:
     username: admin
     password: ${LAB_PASSWORD}     # via env
   token_path: data.access_token
-  token_header: Authorization
+  token_header: Authorization     # opcional, default Authorization
   token_prefix: "Bearer "
 engine:
   max_concurrency: 5
@@ -168,6 +180,48 @@ engine:
 checks:
   enabled: [missing-headers, exposed-secrets, sqli-boolean, xss-reflected]
 ```
+
+### Regras de validação
+
+`config.Load` acumula **todos** os problemas e falha uma vez só, listando cada um —
+quem está corrigindo o arquivo vê a lista inteira em vez de descobrir um erro por
+execução.
+
+| Regra | Motivo |
+|---|---|
+| `schema_version` precisa ser exatamente `1` | Mudança futura de formato falha alto, não é lida errado em silêncio |
+| `target.base_url` precisa ser URL absoluta | Sem host não há o que checar contra a allowlist |
+| `scope.allowed_hosts` não pode ser vazia, sem entradas em branco | É a fronteira de segurança |
+| **host do `target.base_url` ∈ `scope.allowed_hosts`** | Config incoerente faria o `ScopeGuard` bloquear o próprio alvo; falha na largada em vez de a cada request |
+| `auth.login_endpoint`, `auth.token_path`, `credentials.username`, `credentials.password` obrigatórios | Sem eles não há login possível |
+| `engine.max_concurrency`, `requests_per_second`, `timeout` > 0 | Zero desligaria pool ou rate limiter |
+| `checks.enabled` não pode ser vazia | Um scan sem checks é ruído |
+
+`auth.method` e `auth.token_header` são opcionais (default `POST` e `Authorization`).
+
+### Expansão de `${VAR}`
+
+Feita sobre os **valores escalares do YAML já parseado**, nunca sobre o texto cru —
+assim um `${LAB_PASSWORD}` citado num comentário explicativo continua sendo
+documentação, não uma referência a resolver. Variável não definida aborta com o nome
+dela na mensagem (`envexpand.MissingVarsError` traz a lista completa, acessível via
+`errors.AsType`), em vez de mandar o literal `${VAR}` como credencial para o alvo.
+
+### Contrato de autenticação
+
+Implementado em `internal/core/auth`:
+
+- Login no `login_endpoint`, token extraído por `token_path` (notação de ponto sobre
+  objetos JSON; sem indexação de array) e injetado em `token_header` com `token_prefix`.
+- **Re-auth em 401, exatamente uma vez.** Se o retry ainda devolver 401, a resposta
+  401 é repassada como resposta válida — cabe à camada de checks marcar a rota como
+  `skipped`, nunca como "vulnerável".
+- Se o próprio re-login falhar, o erro envolve `auth.ErrReAuthFailed` (testável com
+  `errors.Is`), distinguindo "auth quebrada" de "rota realmente não autorizada".
+- 401s concorrentes do worker pool colapsam num **único** re-login (contador de
+  geração + mutex), em vez de um login por request em voo.
+- Requests com corpo precisam ser reexecutáveis (`GetBody`), senão o retry pós-re-auth
+  é rejeitado com erro explícito em vez de reenviar corpo vazio.
 
 ---
 
