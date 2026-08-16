@@ -1,0 +1,6 @@
+schema_version: 1
+target:
+  base_url: http://localhost:8080
+   this line is indented wrong and unquoted: [
+scope:
+  allowed_hosts: ["localhost:8080"

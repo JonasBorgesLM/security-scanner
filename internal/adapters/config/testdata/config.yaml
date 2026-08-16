@@ -1,0 +1,21 @@
+schema_version: 1
+target:
+  base_url: http://localhost:8080
+scope:
+  allowed_hosts: ["localhost:8080", "127.0.0.1:8080"]
+auth:
+  login_endpoint: /login
+  method: POST
+  credentials:
+    username: admin
+    password: ${SCANNER_TEST_LAB_PASSWORD}
+  token_path: data.access_token
+  token_header: Authorization
+  token_prefix: "Bearer "
+engine:
+  max_concurrency: 5
+  requests_per_second: 10
+  timeout: 5m
+  test_destructive: false
+checks:
+  enabled: [missing-headers, exposed-secrets, sqli-boolean, xss-reflected]

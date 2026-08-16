@@ -1,0 +1,17 @@
+schema_version: 1
+target:
+  base_url: ""
+scope:
+  allowed_hosts: []
+auth:
+  login_endpoint: ""
+  credentials:
+    username: ""
+    password: ""
+  token_path: ""
+engine:
+  max_concurrency: 0
+  requests_per_second: 0
+  timeout: 0s
+checks:
+  enabled: []

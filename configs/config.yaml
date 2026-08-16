@@ -1,0 +1,58 @@
+# Example configuration for the scanner.
+#
+# Copy this file, point it at YOUR OWN lab API, and export the secrets it
+# references before running:
+#
+#   export LAB_PASSWORD='...'
+#   scanner scan --spec openapi.yaml --config configs/config.yaml
+#
+# scope.allowed_hosts is the hard security boundary: any request to a host
+# not listed here is rejected before it leaves the process. The scanner also
+# refuses to start if target.base_url's host is missing from the list.
+
+schema_version: 1
+
+target:
+  # Base URL of the API under test. Must be an absolute URL.
+  base_url: http://localhost:8080
+
+scope:
+  # Exact host[:port] values, matched against each request URL's host.
+  # Include every alias you might reach the lab through.
+  allowed_hosts:
+    - "localhost:8080"
+    - "127.0.0.1:8080"
+
+auth:
+  # Resolved against target.base_url.
+  login_endpoint: /login
+  method: POST
+  credentials:
+    username: admin
+    # Never commit a real credential. ${VAR} is read from the environment
+    # and the scanner fails with a clear error if the variable is unset.
+    password: ${LAB_PASSWORD}
+  # Dot-notation path to the token inside the JSON login response.
+  # For {"data": {"access_token": "..."}} this is data.access_token
+  token_path: data.access_token
+  token_header: Authorization
+  token_prefix: "Bearer "
+
+engine:
+  # Worker pool size and rate limit — keep these gentle; the point is to
+  # avoid self-DoS-ing your own lab.
+  max_concurrency: 5
+  requests_per_second: 10
+  # Global deadline for the whole run (Go duration: 30s, 5m, 1h...).
+  timeout: 5m
+  # DELETE/PUT/PATCH endpoints are skipped unless this is true.
+  # Leave it false unless you can restore the lab's state afterwards.
+  test_destructive: false
+
+checks:
+  # Names of registered checks to run.
+  enabled:
+    - missing-headers
+    - exposed-secrets
+    - sqli-boolean
+    - xss-reflected
