@@ -1,0 +1,118 @@
+openapi: 3.0.3
+info:
+  title: security-scanner lab API
+  version: "1.0"
+  description: >
+    Deliberately vulnerable API for exercising security-scanner end to end.
+    See lab/main.go for what each route does and why.
+servers:
+  - url: http://localhost:8080
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      security: []
+      responses:
+        "200":
+          description: OK
+  /items:
+    get:
+      operationId: listItems
+      description: >
+        SQL injection target — `q` is matched against name by exact-match
+        string concatenation, unsanitised, into the query.
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+    post:
+      operationId: createItem
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  type: string
+                price:
+                  type: number
+      responses:
+        "201":
+          description: Created
+  /items/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      operationId: getItem
+      description: Deliberately safe (parameterized) — a control for the sqli-boolean check.
+      responses:
+        "200":
+          description: OK
+    put:
+      operationId: updateItem
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                price:
+                  type: number
+      responses:
+        "200":
+          description: OK
+    delete:
+      operationId: deleteItem
+      responses:
+        "204":
+          description: No Content
+  /search:
+    get:
+      operationId: searchItems
+      description: >
+        Reflected XSS target — `term` is written into the HTML response with
+        no escaping. No active scan check for this exists yet (see
+        CLAUDE.md's implementation order); internal/attack's xss-reflected
+        Confirmer can still be exercised against it by hand.
+      security: []
+      parameters:
+        - name: term
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /debug:
+    get:
+      operationId: getDebug
+      description: Exposed-secrets target — leaks an AWS-shaped key and a generic API key.
+      security: []
+      responses:
+        "200":
+          description: OK
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

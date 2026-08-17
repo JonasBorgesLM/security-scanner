@@ -474,4 +474,12 @@ autenticação.
 - **Unit** — cada check contra `HTTPClient` fake com responses de `testdata/`; sem rede.
 - **Baseline** — teste dedicado provando que conteúdo dinâmico não vira falso-positivo.
 - **ScopeGuard** — teste provando que host fora da allowlist é bloqueado (segurança do scanner).
-- **Integração** — opcional, contra a API vulnerável de lab via Docker Compose.
+- **Integração** — opcional, contra a API vulnerável de lab via Docker Compose:
+  `lab/` (módulo Go próprio) + Postgres real, subidos por `docker-compose.yml`
+  na raiz do repo. Cobre as quatro classes deste projeto — SQLi boolean-based
+  com extração via `UNION SELECT` de verdade, secrets expostos, headers
+  ausentes, e XSS refletido (este último sem check ativo ainda; existe pro
+  `attack`'s confirmer e pro dia em que `xss-reflected` for implementado).
+  `GET /items/{id}` é parametrizado de propósito — um controle negativo pra
+  notar um falso positivo. Não faz parte de `go test ./...`; é um alvo pra
+  rodar o ciclo `scan → attack → report` manualmente. Ver README.md §Lab.

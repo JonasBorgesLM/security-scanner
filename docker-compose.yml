@@ -1,0 +1,37 @@
+# Brings up the deliberately vulnerable lab API (lab/) behind a real
+# Postgres database, for running the scanner's full scan -> attack -> report
+# cycle against something other than a fake client in a unit test.
+#
+# See README.md's "Lab" section for the walkthrough. Never point this
+# compose file, or the image it builds, at anything but your own machine.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: labapi
+      POSTGRES_PASSWORD: labapi
+      POSTGRES_DB: labapi
+    volumes:
+      - ./lab/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U labapi -d labapi"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  lab-api:
+    build: ./lab
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://labapi:labapi@db:5432/labapi?sslmode=disable
+      # Matches configs/config.yaml's auth.credentials.password
+      # (${LAB_PASSWORD}) by default — override both together if you change
+      # it, e.g. via a .env file next to this compose file.
+      LAB_PASSWORD: ${LAB_PASSWORD:-lab-pass-only-123}
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
