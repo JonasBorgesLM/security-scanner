@@ -98,14 +98,30 @@ type CheckMetadata struct {
     Name          string
     OWASPCategory string
     Severity      string
-    Kind          string              // "passive" | "active"
+    Kind          string              // KindPassive | KindActive
     RequiresAuth  bool
     AppliesTo     func(Endpoint) bool
 }
 
+// Response é a resposta capturada na coleta inicial, lida inteira em
+// memória para que vários checks inspecionem a mesma sem refazer o request.
+type Response struct {
+    StatusCode int
+    Headers    http.Header
+    Body       []byte
+    Duration   time.Duration
+}
+
+// Target é para onde o check aponta: o endpoint mais a baseline coletada.
+type Target struct {
+    Endpoint    Endpoint
+    Baseline    *Response   // nil se a coleta falhou
+    BaselineErr error
+}
+
 type Check interface {
     Metadata() CheckMetadata
-    Run(ctx context.Context, ep Endpoint, c ports.HTTPClient) ([]Finding, error)
+    Run(ctx context.Context, t Target, c ports.HTTPClient) ([]Finding, error)
 }
 
 type Finding struct {
@@ -141,7 +157,7 @@ type Evidence struct {
 ## 5. Correções incorporadas no planejamento
 
 1. **Payloads em `go:embed`** — não hardcoded; estende sem tocar na lógica.
-2. **`Kind` passive/active** — engine não gasta request em check passivo.
+2. **`Kind` passive/active** — engine não gasta request em check passivo; ele recebe a resposta da coleta inicial e um cliente que recusa requests.
 3. **`CapturedRequest` completo no Finding** — `attack` consegue reproduzir a suspeita.
 4. **Baseline anti-falso-positivo** — repete request limpo p/ medir ruído (timestamp, CSRF token) antes de comparar em SQLi boolean-based.
 5. **Flag `Destructive`** — métodos destrutivos pulados por padrão; opt-in explícito.
@@ -206,6 +222,81 @@ assim um `${LAB_PASSWORD}` citado num comentário explicativo continua sendo
 documentação, não uma referência a resolver. Variável não definida aborta com o nome
 dela na mensagem (`envexpand.MissingVarsError` traz a lista completa, acessível via
 `errors.AsType`), em vez de mandar o literal `${VAR}` como credencial para o alvo.
+
+### Registry de checks
+
+Implementado em `internal/checks/registry.go`, no padrão dos drivers de
+`database/sql`: cada check se auto-registra num `init()`, então adicionar um check é
+adicionar um arquivo — não há lista central para manter em sincronia.
+
+- **`RegisterCheck(c)`** entra em pânico com check nil, nome vazio, `Kind`
+  desconhecido ou nome duplicado. Todos são erros de programação em código próprio,
+  detectáveis no instante em que o binário sobe — devolver `error` de dentro de um
+  `init()` não daria a ninguém como tratar.
+- **`Enabled(names)`** resolve o `checks.enabled` do config. Nome desconhecido é
+  **erro**, listando os disponíveis — um typo no `config.yaml` desabilitaria um check
+  em silêncio e produziria um relatório limpinho que simplesmente nunca o executou.
+- **`All()` / `Names()`** devolvem em ordem de nome.
+
+O engine **não** importa o registry: recebe `[]model.Check` já resolvido. Isso mantém
+o engine testável sem estado global e preserva a direção das dependências
+(`core/` não depende de `checks/`). Quem costura os dois é o composition root.
+
+### Contrato do engine
+
+Implementado em `internal/core/engine`:
+
+- **`Collect(ctx, endpoints)`** — a *coleta inicial*: um request por endpoint,
+  paralelizado no pool e limitado pelo rate limiter, produzindo `[]Target` com a
+  baseline de cada um. **Só envia método seguro** (GET/HEAD/OPTIONS): endpoint
+  declarado como POST/PUT/PATCH/DELETE é sondado com GET, e a substituição fica
+  registrada em `Response.ProbedMethod`. Uma fase chamada "coleta" não pode criar
+  nem destruir nada no alvo, e os headers que os checks passivos olham são
+  propriedade da rota, não do verbo. Parâmetros de path (`{id}`) são preenchidos com
+  um placeholder; 404, 405 ou 400 continuam sendo baseline válida. Endpoint
+  destrutivo **não é coletado** sem opt-in, então não custa request algum. Coleta
+  que falha ainda devolve um `Target`, com `BaselineErr` no lugar da resposta.
+  Cancelamento devolve o que já foi coletado **mais um erro** — o chamador não pode
+  confundir coleta truncada com coleta completa.
+- **`BuildJobs(targets, checks)`** — cruza cada target com os checks aplicáveis, e
+  reaplica a regra não-destrutiva (invariante de segurança garantida num lugar só é
+  uma refatoração de distância de não ser garantida em lugar nenhum). Dois filtros:
+  `AppliesTo`, e `CheckMetadata.RequiresAuth` — um check que só faz sentido com
+  sessão (IDOR e afins) não é pareado com rota pública. Checks são pareados em ordem
+  de nome, então a lista de jobs não depende da ordem em que o registry entregou.
+- **`Run(ctx, jobs)`** — worker pool de `max_concurrency` workers consumindo de um
+  channel. Devolve os resultados em ordem dos jobs, independente de qual worker
+  terminou primeiro.
+- **Rate limiter como decorator de `ports.HTTPClient`**, não como portão por job.
+  A cobrança é por *request*: check passivo que não faz request nenhum não gasta
+  budget; check ativo que faz três é cobrado três vezes. Um único limiter é
+  compartilhado por todos os workers, então concorrência não multiplica a taxa.
+- **Check passivo recebe um cliente que recusa todo request** (`ErrPassiveCheckRequest`).
+  "Passivo não toca a rede" passa a valer por construção, não por confiança em cada
+  check. É isso que mantém o número de requests proporcional ao tamanho do spec, e
+  não ao spec vezes o número de checks habilitados.
+- **Shutdown gracioso** — cancelar o `ctx` (timeout global ou Ctrl+C) para o
+  despacho de novos jobs, deixa os workers terminarem o que já pegaram, e devolve
+  os resultados parciais junto com `ctx.Err()`. O `ctx` também chega aos checks,
+  para que um request em voo se desenrole em vez de prender o shutdown atrás de
+  uma conexão pendurada.
+- **Check que entra em pânico vira erro no `Result`**, não derruba o scan inteiro —
+  perder dez minutos de varredura por um bug num check seria pior do que reportá-lo.
+  Pânico fora de um check (na coleta, digamos) é contido pelo pool: aquele item some
+  do resultado e a fase se reporta incompleta.
+- **`Run` carimba o que já sabe em cada `Finding`**: `Endpoint`, `CheckName`,
+  `Severity`, `OWASPCategory` e um `ID` determinístico. Assim nenhum check repete
+  metadado que já declarou — e nenhum pode esquecer o `Endpoint`, que é justamente o
+  que o estágio `attack` precisa para reproduzir.
+- **Check que não consegue concluir devolve `model.Skippedf(...)`** e vira
+  `Result.Skipped` com o motivo, nunca finding e nunca erro. Rota mostrada como limpa
+  sem ter sido examinada é pior que rota assumidamente não examinada.
+- Erro de um check é registrado no `Result.Err` daquele job; `Run` só devolve erro
+  quando algum job ficou sem rodar.
+
+O login/re-auth do `Authenticator` fica *abaixo* do limiter e portanto não é
+limitado por ele — decisão consciente: logins são raros e já colapsados num único
+in-flight pelo próprio `Authenticator`.
 
 ### Contrato de autenticação
 

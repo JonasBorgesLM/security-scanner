@@ -16,10 +16,15 @@ type CapturedRequest struct {
 // Evidence is what a check observed, including the baseline "clean"
 // response used to rule out false positives from dynamic content.
 type Evidence struct {
-	BaselineResponse string        `json:"baseline_response,omitempty"`
-	ResponseSnippet  string        `json:"response_snippet,omitempty"`
-	ResponseTime     time.Duration `json:"response_time"`
-	StatusCode       int           `json:"status_code"`
+	BaselineResponse string `json:"baseline_response,omitempty"`
+	ResponseSnippet  string `json:"response_snippet,omitempty"`
+	// ResponseTime is measurement noise for most checks and must be left
+	// zero unless the finding is actually about timing (a time-based
+	// injection, say). Wall-clock values differ between runs, and
+	// findings.json has to be byte-identical across two scans of an
+	// unchanged target for git diff to be a useful review tool.
+	ResponseTime time.Duration `json:"response_time,omitempty"`
+	StatusCode   int           `json:"status_code"`
 }
 
 // Finding is a single suspected (scan) or confirmed (attack) vulnerability.
