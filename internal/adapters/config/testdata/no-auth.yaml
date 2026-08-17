@@ -1,0 +1,14 @@
+# A valid config for a fully public target: no auth block at all. Load must
+# accept this — forcing dummy credentials just to pass validation would be
+# noise.
+schema_version: 1
+target:
+  base_url: http://localhost:8080
+scope:
+  allowed_hosts: ["localhost:8080"]
+engine:
+  max_concurrency: 5
+  requests_per_second: 10
+  timeout: 5m
+checks:
+  enabled: [missing-headers]

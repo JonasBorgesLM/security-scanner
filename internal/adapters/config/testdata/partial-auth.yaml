@@ -1,0 +1,17 @@
+# A half-filled auth block: login_endpoint is set, so the block counts as
+# present, but token_path and credentials are missing. This is almost always
+# a mistake (a typo'd key, a field left out), so Load must reject it and name
+# each missing field — rather than silently scanning unauthenticated.
+schema_version: 1
+target:
+  base_url: http://localhost:8080
+scope:
+  allowed_hosts: ["localhost:8080"]
+auth:
+  login_endpoint: /login
+engine:
+  max_concurrency: 5
+  requests_per_second: 10
+  timeout: 5m
+checks:
+  enabled: [missing-headers]

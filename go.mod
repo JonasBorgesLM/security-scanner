@@ -1,6 +1,6 @@
 module github.com/JonasBorgesLM/security-scanner
 
-go 1.26.5
+go 1.25.0
 
 require (
 	github.com/getkin/kin-openapi v0.146.0

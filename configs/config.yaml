@@ -23,6 +23,9 @@ scope:
     - "localhost:8080"
     - "127.0.0.1:8080"
 
+# Optional. Omit this whole block for a target whose spec declares no
+# protected routes. If you keep it, it is all-or-nothing: login_endpoint,
+# token_path, credentials.username and credentials.password must all be set.
 auth:
   # Resolved against target.base_url.
   login_endpoint: /login

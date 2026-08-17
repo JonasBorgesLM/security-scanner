@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/ports"
 )
@@ -54,7 +53,6 @@ type Response struct {
 	StatusCode int
 	Headers    http.Header
 	Body       []byte
-	Duration   time.Duration
 	// ProbedMethod is the method actually used to fetch this baseline. It
 	// differs from the endpoint's own method whenever that method is not
 	// safe: the collector substitutes GET rather than send a request that

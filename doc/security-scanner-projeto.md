@@ -111,10 +111,11 @@ type CheckMetadata struct {
 // Response é a resposta capturada na coleta inicial, lida inteira em
 // memória para que vários checks inspecionem a mesma sem refazer o request.
 type Response struct {
-    StatusCode int
-    Headers    http.Header
-    Body       []byte
-    Duration   time.Duration
+    URL          string      // origem da baseline (scheme/host p/ checks ativos)
+    StatusCode   int
+    Headers      http.Header
+    Body         []byte
+    ProbedMethod string      // método realmente usado (GET substitui métodos inseguros)
 }
 
 // Target é para onde o check aponta: o endpoint mais a baseline coletada.
@@ -214,11 +215,18 @@ execução.
 | `target.base_url` precisa ser URL absoluta | Sem host não há o que checar contra a allowlist |
 | `scope.allowed_hosts` não pode ser vazia, sem entradas em branco | É a fronteira de segurança |
 | **host do `target.base_url` ∈ `scope.allowed_hosts`** | Config incoerente faria o `ScopeGuard` bloquear o próprio alvo; falha na largada em vez de a cada request |
-| `auth.login_endpoint`, `auth.token_path`, `credentials.username`, `credentials.password` obrigatórios | Sem eles não há login possível |
+| bloco `auth` **opcional, tudo-ou-nada**: ausente é válido; se qualquer campo for setado, `login_endpoint`, `token_path`, `credentials.username` e `credentials.password` passam a ser obrigatórios | Um alvo público não precisa de credenciais; mas um bloco pela metade quase sempre é erro (chave errada, campo esquecido) |
 | `engine.max_concurrency`, `requests_per_second`, `timeout` > 0 | Zero desligaria pool ou rate limiter |
 | `checks.enabled` não pode ser vazia | Um scan sem checks é ruído |
 
 `auth.method` e `auth.token_header` são opcionais (default `POST` e `Authorization`).
+
+Se o config **valida** (bloco `auth` ausente é válido), ainda resta a pergunta que só
+o spec responde: o alvo *precisa* de auth? Essa checagem cruzada mora no
+`cmd/scanner` (`runScan`/`runAttack`), não no `config`: o `Authenticator` só é
+construído quando há endpoint com `RequiresAuth`, e se houver rota protegida sem bloco
+`auth` configurado, a etapa falha com mensagem clara em vez de escanear a rota sem
+autenticação.
 
 ### Expansão de `${VAR}`
 
@@ -226,7 +234,7 @@ Feita sobre os **valores escalares do YAML já parseado**, nunca sobre o texto c
 assim um `${LAB_PASSWORD}` citado num comentário explicativo continua sendo
 documentação, não uma referência a resolver. Variável não definida aborta com o nome
 dela na mensagem (`envexpand.MissingVarsError` traz a lista completa, acessível via
-`errors.AsType`), em vez de mandar o literal `${VAR}` como credencial para o alvo.
+`errors.As`), em vez de mandar o literal `${VAR}` como credencial para o alvo.
 
 ### Registry de checks
 

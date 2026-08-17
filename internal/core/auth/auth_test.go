@@ -405,7 +405,8 @@ func TestNew_MissingEnvVarErrors(t *testing.T) {
 		t.Fatal("New() error = nil, want an error for an unset ${VAR}")
 	}
 
-	if _, ok := errors.AsType[*envexpand.MissingVarsError](err); !ok {
+	var missing *envexpand.MissingVarsError
+	if !errors.As(err, &missing) {
 		t.Errorf("New() error = %v, want it to wrap an *envexpand.MissingVarsError", err)
 	}
 }
