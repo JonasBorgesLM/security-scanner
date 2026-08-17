@@ -1,0 +1,25 @@
+# Boolean-based SQLi payload pairs for the sqli-boolean check, embedded at
+# build time so the list can grow without touching check logic.
+#
+# Format, one pair per line:
+#
+#   <name> ||| <true-payload> ||| <false-payload>
+#
+# The check injects <true-payload> and <false-payload> into the same
+# parameter and compares the two responses: if the parameter is
+# concatenated unsanitised into a query, the "always true" condition
+# should change what the query matches, and the "always false" one
+# shouldn't. Neither payload deletes or modifies anything — this is a
+# read-only WHERE-clause probe, not a write.
+#
+# Every pair must use two payloads that differ (a pair testing "x" against
+# "x" could never show a difference, so mustParsePayloadPairs rejects it).
+#
+# Blank lines and lines starting with # are ignored.
+
+single-quote-or ||| ' OR '1'='1 ||| ' OR '1'='2
+single-quote-or-comment ||| ' OR '1'='1'-- - ||| ' OR '1'='2'-- -
+double-quote-or ||| " OR "1"="1 ||| " OR "1"="2
+numeric-or ||| 1 OR 1=1 ||| 1 OR 1=2
+paren-or ||| ') OR ('1'='1 ||| ') OR ('1'='2
+or-true-line-comment ||| ' OR 1=1-- - ||| ' OR 1=2-- -

@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/JonasBorgesLM/security-scanner/internal/adapters/config"
+	"github.com/JonasBorgesLM/security-scanner/internal/checks"
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
 )
 
@@ -25,10 +27,8 @@ import (
 type labServer struct {
 	logins   atomic.Int32
 	requests atomic.Int32
-	// secureHeaders, when set, makes /secure answer with a full set of
-	// security headers so the check has something clean to find.
-	mu      sync.Mutex
-	methods []string
+	mu       sync.Mutex
+	methods  []string
 }
 
 func newLabServer(t *testing.T) (*httptest.Server, *labServer) {
@@ -49,10 +49,13 @@ func newLabServer(t *testing.T) (*httptest.Server, *labServer) {
 		lab.methods = append(lab.methods, r.Method+" "+r.URL.Path)
 		lab.mu.Unlock()
 
+		// /secure answers with the full set the check looks for, so the
+		// run proves the check discriminates rather than flagging blindly.
 		if strings.HasPrefix(r.URL.Path, "/secure") {
-			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.Header().Set("Content-Security-Policy", "default-src 'none'")
-			w.Header().Set("Referrer-Policy", "no-referrer")
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+			w.Header().Set("X-Frame-Options", "DENY")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
 		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"ok":true}`))
@@ -225,10 +228,31 @@ func TestScan_EndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("HSTS is not reported against a plaintext lab", func(t *testing.T) {
+	t.Run("every finding names one of the checked headers", func(t *testing.T) {
+		want := []string{
+			"Content-Security-Policy",
+			"Strict-Transport-Security",
+			"X-Frame-Options",
+			"X-Content-Type-Options",
+		}
 		for _, f := range out.Findings {
-			if strings.Contains(f.ID, "Strict-Transport-Security") {
-				t.Errorf("%s reported over http:// — HSTS is a no-op there", f.ID)
+			named := false
+			for _, h := range want {
+				if strings.HasSuffix(f.ID, ":"+h) {
+					named = true
+					break
+				}
+			}
+			if !named {
+				t.Errorf("finding %q does not name one of %v", f.ID, want)
+			}
+		}
+	})
+
+	t.Run("severity is medium", func(t *testing.T) {
+		for _, f := range out.Findings {
+			if f.Severity != "medium" {
+				t.Errorf("%s: Severity = %q, want medium", f.ID, f.Severity)
 			}
 		}
 	})
@@ -303,5 +327,25 @@ func TestScan_OutOfScopeTargetIsRejected(t *testing.T) {
 	}
 	if got := lab.requests.Load(); got != 0 {
 		t.Errorf("lab received %d requests, want 0 — an out-of-scope target must never be contacted", got)
+	}
+}
+
+// The example config ships with the tool, so every check it enables must
+// actually be registered. Listing a check that does not exist yet makes the
+// operator's first copy-paste abort — which is exactly what this caught.
+func TestShippedConfigEnablesOnlyRegisteredChecks(t *testing.T) {
+	t.Setenv("LAB_PASSWORD", "example")
+
+	cfg, err := config.Load(filepath.Join("..", "..", "configs", "config.yaml"))
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+
+	enabled, err := checks.Enabled(cfg.Checks.Enabled)
+	if err != nil {
+		t.Fatalf("configs/config.yaml enables a check that is not registered: %v", err)
+	}
+	if len(enabled) != len(cfg.Checks.Enabled) {
+		t.Errorf("resolved %d checks from %d names", len(enabled), len(cfg.Checks.Enabled))
 	}
 }

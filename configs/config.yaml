@@ -51,8 +51,9 @@ engine:
 
 checks:
   # Names of registered checks to run.
+  # Only names the binary actually knows are accepted; a typo aborts the run
+  # instead of silently disabling a check.
   enabled:
     - missing-headers
     - exposed-secrets
     - sqli-boolean
-    - xss-reflected

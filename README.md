@@ -116,7 +116,29 @@ Checks implementados:
 
 | Check | Tipo | O que reporta |
 |---|---|---|
-| `missing-headers` | passivo | Cabeçalhos de segurança ausentes na resposta (`X-Content-Type-Options`, `Content-Security-Policy`, `Referrer-Policy`, e `Strict-Transport-Security` só sobre HTTPS) |
+| `missing-headers` | passivo | Cabeçalhos de segurança ausentes na resposta: `Content-Security-Policy`, `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options`. Severidade média, OWASP A05. |
+| `exposed-secrets` | passivo | Credenciais no corpo da resposta, inclusive dentro de comentários HTML/JS: chaves de nuvem, tokens de serviço, blocos de chave privada, JWTs e atribuições genéricas (`api_key`, `password`, `Bearer`, connection strings). OWASP A02. |
+| `sqli-boolean` | ativo | SQLi boolean-based em parâmetros de query/path: injeta uma condição sempre-verdadeira e uma sempre-falsa e compara as respostas contra o ruído medido do próprio endpoint. OWASP A03, severidade alta. |
+
+Os padrões de `exposed-secrets` ficam em `internal/checks/patterns/secrets.txt`,
+embutidos via `go:embed` — dá para estender a lista sem tocar na lógica do check.
+Cada padrão declara confiança `high` ou `low`: os genéricos (`low`) só viram
+finding depois de passar por um filtro de placeholders, para que
+`"password": "changeme"` num exemplo de documentação não vire ruído.
+
+O `sqli-boolean` é o primeiro check **ativo**: em vez de ler a baseline coletada
+uma vez pelo engine, ele envia seus próprios requests. Para cada parâmetro de
+query/path do endpoint, mede o ruído de conteúdo dinâmico repetindo um request
+benigno 3 vezes, injeta pares verdadeiro/falso de `internal/checks/payloads/sqli.txt`
+(também via `go:embed`) e só marca suspeita se a diferença de tamanho entre as
+duas respostas for **maior** que o ruído já observado — é a defesa contra
+falso-positivo descrita no invariante #4. O `CapturedRequest` de cada finding
+carrega a URL exata que produziu o resultado, pronta para o estágio `attack`
+(ou um `curl` manual) reproduzir.
+
+**Segredos são redigidos no relatório** (`AKIA****************`, com o tamanho).
+Um scanner de secrets que escreve o segredo dentro de um `findings.json`
+versionado mudou o vazamento de lugar em vez de encontrá-lo.
 
 Um nome desconhecido em `checks.enabled` aborta a execução antes de qualquer
 request — um typo não desabilita um check em silêncio.
@@ -130,10 +152,10 @@ target:     http://localhost:8080
 scope:      [localhost:8080 127.0.0.1:8080]
 spec:       openapi.yaml
 endpoints:  6 (5 require auth, 2 destructive)
-checks:     missing-headers
+checks:     exposed-secrets, missing-headers, sqli-boolean
             2 destructive endpoint(s) will be skipped (engine.test_destructive is false)
 
-wrote findings.json (9 findings, 0 skipped, 0 failed)
+wrote findings.json (17 findings, 0 skipped, 0 failed)
 ```
 
 Endpoints que não puderam ser examinados aparecem como `skipped`, com o motivo —
@@ -166,9 +188,12 @@ internal/
   checks/             um arquivo por check, auto-registro via init()
     registry.go       RegisterCheck + resolução de checks.enabled
     headers.go        missing-headers (passivo)
+    secrets.go        exposed-secrets (passivo)
+    sqli.go           sqli-boolean (ativo)
+    patterns/         regexes de detecção (secrets), via go:embed
+    payloads/         payloads de ataque (sqli), via go:embed
   envexpand/          expansão de ${VAR} compartilhada
   report/             templates HTML + writer JSON
-payloads/             wordlists carregadas via go:embed
 configs/              config.yaml de exemplo
 ```
 

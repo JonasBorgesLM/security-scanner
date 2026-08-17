@@ -40,7 +40,7 @@ Lightweight hexagonal (ports/adapters), so checks can be tested against a fake `
 - `internal/adapters/config/` — reads and validates `config.yaml`. Accumulates every validation failure into one message instead of stopping at the first, and cross-checks that `target.base_url`'s host is in `scope.allowed_hosts`.
 - `internal/envexpand/` — shared `${VAR}` expansion used by `config` and `auth`. Expands YAML scalar values only (never comments) and errors, naming every unset variable, rather than passing a literal `${VAR}` through as a credential.
 - `internal/report/` — HTML templates + JSON writer for the final report.
-- `payloads/` — attack payload wordlists, loaded via `go:embed` so they can be extended without touching check logic.
+- `internal/checks/payloads/` and `internal/checks/patterns/` — attack payload wordlists (strings *sent to* the target, e.g. `payloads/sqli.txt`) and detection regexes (`patterns/secrets.txt`) respectively, both loaded via `go:embed` so they extend without touching check logic. Both live beside the check that embeds them rather than in a shared top-level directory — `go:embed` cannot ascend past the embedding source file's own directory, so there is nowhere else they could live and still be embeddable.
 - `configs/` — `config.yaml`: a single commented example covering target, scope, auth, engine tuning and enabled checks. Scope lives inside it under `scope.allowed_hosts` (there is no separate `scope.yaml`; `doc/security-scanner-projeto.md` §6 is the format of record).
 - `cmd/scanner/` — CLI and **composition root**. The only place that picks concrete adapters, and therefore the only place responsible for handing every component the ScopeGuard-enforcing HTTP client.
 
@@ -71,6 +71,10 @@ These constraints are the actual point of the project and must never be relaxed 
 
 ## Implementation order
 
-Checks are built in this order (see `doc/security-scanner-projeto.md` §7 for rationale): missing security headers (passive, **done** — `internal/checks/headers.go`) → exposed secrets (passive) → SQLi boolean-based (active) → XSS reflected (active) → IDOR / weak JWT (phase 2, require richer models).
+Checks are built in this order (see `doc/security-scanner-projeto.md` §7 for rationale): missing security headers (passive, **done** — `internal/checks/headers.go`) → exposed secrets (passive, **done** — `internal/checks/secrets.go`) → SQLi boolean-based (active, **done** — `internal/checks/sqli.go`) → XSS reflected (active) → IDOR / weak JWT (phase 2, require richer models).
+
+Two rules any secret-adjacent check must keep: **redact the value** in `Evidence` (findings.json is committed, so writing the secret there relocates the leak rather than reporting it), and put anything regex-shaped behind a placeholder filter — a check that flags `"password": "changeme"` in example docs is one people learn to ignore.
+
+`sqli-boolean` is the first active check and sets the pattern any check that injects its own requests should follow: measure the endpoint's own noise (repeat a benign request `sqliNoiseSamples` times, same value every time) *before* comparing anything, and only flag a difference that clears that noise floor — never a fixed threshold, since what counts as "noise" is a property of the target, not a constant. It does not read `Target.Baseline`'s body (that baseline has no parameters filled in, so it cannot answer "does changing this parameter change the response"); it reuses only `Target.Baseline.URL` for the target's scheme and host, since nothing else in the `Check` contract carries that.
 
 A new check is one file in `internal/checks/`: implement `model.Check`, call `RegisterCheck` from `init()`, and add its name to `checks.enabled`. Return `model.Skippedf(...)` rather than guessing when the baseline is missing, and set only `Finding.ID` (as a discriminator) plus `Evidence` — the engine fills in the rest.
