@@ -207,6 +207,36 @@ documentação, não uma referência a resolver. Variável não definida aborta 
 dela na mensagem (`envexpand.MissingVarsError` traz a lista completa, acessível via
 `errors.AsType`), em vez de mandar o literal `${VAR}` como credencial para o alvo.
 
+### Contrato do engine
+
+Implementado em `internal/core/engine`:
+
+- **`BuildJobs(endpoints, checks, testDestructive)`** — cruza cada endpoint com os
+  checks cujo `AppliesTo` aceita, e aplica a regra não-destrutiva: endpoint com
+  `Destructive: true` não gera job nenhum sem opt-in explícito. Checks são pareados
+  em ordem de nome, então a lista de jobs não depende da ordem em que o registry
+  entregou.
+- **`Run(ctx, jobs)`** — worker pool de `max_concurrency` workers consumindo de um
+  channel. Devolve os resultados em ordem determinística (path, método, nome do
+  check), independente de qual worker terminou primeiro.
+- **Rate limiter como decorator de `ports.HTTPClient`**, não como portão por job.
+  A cobrança é por *request*: check passivo que não faz request nenhum não gasta
+  budget; check ativo que faz três é cobrado três vezes. Um único limiter é
+  compartilhado por todos os workers, então concorrência não multiplica a taxa.
+- **Shutdown gracioso** — cancelar o `ctx` (timeout global ou Ctrl+C) para o
+  despacho de novos jobs, deixa os workers terminarem o que já pegaram, e devolve
+  os resultados parciais junto com `ctx.Err()`. O `ctx` também chega aos checks,
+  para que um request em voo se desenrole em vez de prender o shutdown atrás de
+  uma conexão pendurada.
+- **Check que entra em pânico vira erro no `Result`**, não derruba o scan inteiro —
+  perder dez minutos de varredura por um bug num check seria pior do que reportá-lo.
+- Erro de um check é registrado no `Result.Err` daquele job; `Run` só devolve erro
+  para falha do run inteiro (cancelamento).
+
+O login/re-auth do `Authenticator` fica *abaixo* do limiter e portanto não é
+limitado por ele — decisão consciente: logins são raros e já colapsados num único
+in-flight pelo próprio `Authenticator`.
+
 ### Contrato de autenticação
 
 Implementado em `internal/core/auth`:
