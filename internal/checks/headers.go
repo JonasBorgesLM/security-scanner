@@ -3,8 +3,6 @@ package checks
 import (
 	"context"
 	"fmt"
-	"net/url"
-	"strings"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
 	"github.com/JonasBorgesLM/security-scanner/internal/ports"
@@ -20,33 +18,26 @@ func init() {
 type securityHeader struct {
 	name string
 	why  string
-	// httpsOnly marks headers that are meaningless over plain HTTP, so a
-	// lab running on http:// does not collect noise findings.
-	httpsOnly bool
 }
 
-// securityHeaders is deliberately short. Every entry has to be defensible
-// on an API — headers aimed at HTML rendering (X-XSS-Protection, and
-// X-Frame-Options for JSON endpoints) produce noise a reader learns to
-// ignore, and a check people ignore is worse than no check.
+// securityHeaders is the set this check reports on. The order is fixed so
+// the findings for one endpoint always come out the same way.
 var securityHeaders = []securityHeader{
 	{
+		name: "Content-Security-Policy",
+		why:  "any reflected content has no policy limiting where scripts and data may be loaded from",
+	},
+	{
 		name: "Strict-Transport-Security",
-		why:  "clients may be downgraded to plaintext HTTP by a network attacker, exposing tokens in transit",
-		// Sending HSTS over plain HTTP is a no-op; browsers ignore it.
-		httpsOnly: true,
+		why:  "clients are not told to stay on TLS, so a network attacker can downgrade them to plaintext and read tokens in transit",
+	},
+	{
+		name: "X-Frame-Options",
+		why:  "a response rendered in a browser can be framed by a third-party site for clickjacking",
 	},
 	{
 		name: "X-Content-Type-Options",
-		why:  "browsers may MIME-sniff a JSON response into something executable",
-	},
-	{
-		name: "Content-Security-Policy",
-		why:  "any reflected content has no policy limiting where scripts and data may come from",
-	},
-	{
-		name: "Referrer-Policy",
-		why:  "full URLs — including path parameters such as identifiers or tokens — leak to third-party sites in the Referer header",
+		why:  "browsers may MIME-sniff a response into something executable instead of trusting its declared type",
 	},
 }
 
@@ -54,7 +45,8 @@ var securityHeaders = []securityHeader{
 // response.
 //
 // It is passive: everything it needs is in the response the engine already
-// collected, so it costs no request of its own.
+// collected during the initial pass, so it costs no request of its own —
+// and the engine hands it a client that refuses to send one.
 type missingHeaders struct{}
 
 var _ model.Check = (*missingHeaders)(nil)
@@ -63,33 +55,31 @@ func (c *missingHeaders) Metadata() model.CheckMetadata {
 	return model.CheckMetadata{
 		Name:          "missing-headers",
 		OWASPCategory: "A05:2021-Security Misconfiguration",
-		Severity:      "low",
+		Severity:      "medium",
 		Kind:          model.KindPassive,
 	}
 }
 
 func (c *missingHeaders) Run(_ context.Context, t model.Target, _ ports.HTTPClient) ([]model.Finding, error) {
 	if t.Baseline == nil {
-		// No response means nothing was examined. Saying so is the whole
-		// point of ErrSkipped: reporting the route as clean here would be a
-		// lie the report has no way to walk back.
-		return nil, model.Skippedf("no baseline response for %s %s: %v", t.Endpoint.Method, t.Endpoint.Path, t.BaselineErr)
+		// Nothing was examined, so there is nothing to conclude. Returning
+		// no findings here would read as "this route is clean" — a lie the
+		// report has no way to walk back.
+		return nil, model.Skippedf("no baseline response for %s %s: %v",
+			t.Endpoint.Method, t.Endpoint.Path, t.BaselineErr)
 	}
-
-	https := isHTTPS(t.Baseline.URL)
 
 	var findings []model.Finding
 	for _, h := range securityHeaders {
-		if h.httpsOnly && !https {
-			continue
-		}
+		// Headers.Get canonicalises its argument, so a server answering in
+		// lower case still counts as present.
 		if t.Baseline.Headers.Get(h.name) != "" {
 			continue
 		}
 
 		findings = append(findings, model.Finding{
-			// Discriminator only: the engine namespaces it with the check
-			// name and endpoint to build the final ID.
+			// Discriminator only: the engine namespaces this with the check
+			// name and endpoint to build the final, stable ID.
 			ID: h.name,
 			Request: model.CapturedRequest{
 				Method: t.Baseline.ProbedMethod,
@@ -99,22 +89,10 @@ func (c *missingHeaders) Run(_ context.Context, t model.Target, _ ports.HTTPClie
 				ResponseSnippet: fmt.Sprintf("response has no %s header; %s", h.name, h.why),
 				StatusCode:      t.Baseline.StatusCode,
 				// ResponseTime deliberately left zero: this finding has
-				// nothing to do with timing, and recording wall-clock here
-				// would make two identical scans produce different files.
+				// nothing to do with timing, and wall-clock here would make
+				// two identical scans produce different files.
 			},
 		})
 	}
 	return findings, nil
-}
-
-// isHTTPS reports whether the baseline was fetched over TLS. Headers that
-// only take effect over TLS are not worth reporting against a plaintext lab
-// — that would be noise, and a check people learn to ignore is worse than
-// no check.
-func isHTTPS(rawURL string) bool {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	return strings.EqualFold(u.Scheme, "https")
 }
