@@ -60,3 +60,4 @@ checks:
     - missing-headers
     - exposed-secrets
     - sqli-boolean
+    - xss-reflected

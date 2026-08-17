@@ -136,6 +136,7 @@ Checks implementados:
 | `missing-headers` | passivo | Cabeçalhos de segurança ausentes na resposta: `Content-Security-Policy`, `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options`. Severidade média, OWASP A05. |
 | `exposed-secrets` | passivo | Credenciais no corpo da resposta, inclusive dentro de comentários HTML/JS: chaves de nuvem, tokens de serviço, blocos de chave privada, JWTs e atribuições genéricas (`api_key`, `password`, `Bearer`, connection strings). OWASP A02. |
 | `sqli-boolean` | ativo | SQLi boolean-based em parâmetros de query/path: injeta uma condição sempre-verdadeira e uma sempre-falsa e compara as respostas contra o ruído medido do próprio endpoint. OWASP A03, severidade alta. |
+| `xss-reflected` | ativo | XSS refletido em parâmetros de query/path: pra cada um, pega uma baseline com valor inerte e injeta um marcador único (prefixo/sufixo de `internal/checks/payloads/xss.txt` + sufixo aleatório fresco por probe). Só marca suspeita se o marcador voltar cru na resposta (sem escape de HTML) **e** não estiver presente na baseline — o segundo critério é o que evita falso-positivo. OWASP A03, severidade alta. |
 
 Os padrões de `exposed-secrets` ficam em `internal/checks/patterns/secrets.txt`,
 embutidos via `go:embed` — dá para estender a lista sem tocar na lógica do check.
@@ -223,7 +224,7 @@ target:     http://localhost:8080
 scope:      [localhost:8080 127.0.0.1:8080]
 spec:       openapi.yaml
 endpoints:  6 (5 require auth, 2 destructive)
-checks:     exposed-secrets, missing-headers, sqli-boolean
+checks:     exposed-secrets, missing-headers, sqli-boolean, xss-reflected
             2 destructive endpoint(s) will be skipped (engine.test_destructive is false)
 
 wrote findings.json (17 findings, 0 skipped, 0 failed)
@@ -250,7 +251,7 @@ separado (`lab/go.mod`); `go build ./...` na raiz do repo não o toca.
 | SQLi boolean-based | `GET /items?q=` | `q` é concatenado sem sanitização num `WHERE name = '<q>'`. Detectado por `sqli-boolean`; `attack` reproduz e ainda extrai o nome do banco via `UNION SELECT` de verdade contra o Postgres. |
 | Secrets expostos | `GET /debug` | Uma chave no formato AWS (o exemplo público da própria AWS, não é credencial real) e um `api_key` genérico. Detectado por `exposed-secrets`. |
 | Headers ausentes | toda resposta | Nenhuma rota seta `CSP`/`HSTS`/`X-Frame-Options`/`X-Content-Type-Options`. Detectado por `missing-headers`. |
-| XSS refletido | `GET /search?term=` | `term` volta sem escape num `<html>`. **`scanner scan` ainda não detecta isso** — não existe check ativo `xss-reflected` implementado ainda (§7 do doc de projeto). O confirmer de `attack` já existe pra quando esse check chegar; dá pra exercitar essa rota manualmente com `curl` enquanto isso. |
+| XSS refletido | `GET /search?term=` | `term` volta sem escape num `<html>`. Detectado por `xss-reflected`; `attack` reproduz com um marcador novo e independente. |
 
 `GET /items/{id}` é deliberadamente **seguro** (parâmetro vinculado, não
 concatenado) — um controle pra notar se o scanner desse falso positivo nele.
@@ -311,7 +312,7 @@ Hexagonal leve (ports/adapters), para que os checks sejam testáveis contra um
 ```
 cmd/scanner/          CLI e composition root — único lugar que decide os adapters
 internal/
-  ports/              interfaces: HTTPClient, Reporter, Store
+  ports/              interfaces: HTTPClient
   adapters/
     httpclient/       cliente HTTP real; é aqui que o ScopeGuard é aplicado
     openapi/          parser de spec OpenAPI 3 → []Endpoint
@@ -326,8 +327,9 @@ internal/
     headers.go        missing-headers (passivo)
     secrets.go        exposed-secrets (passivo)
     sqli.go           sqli-boolean (ativo)
+    xss.go            xss-reflected (ativo)
     patterns/         regexes de detecção (secrets), via go:embed
-    payloads/         payloads de ataque (sqli), via go:embed
+    payloads/         payloads de ataque (sqli) e templates de marcador (xss), via go:embed
   attack/             confirmers de PoC pro estágio attack, mesmo padrão init()
     attack.go         Register + dispatch por CheckName
     sqli.go           sqli-boolean: re-verificação + extração via UNION
