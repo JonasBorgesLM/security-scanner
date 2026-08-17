@@ -1,22 +1,28 @@
-// Package engine orchestrates check execution: a bounded worker pool draws
-// jobs from a channel, every outbound request passes through a shared rate
+// Package engine orchestrates check execution: a baseline response is
+// collected once per endpoint, a bounded worker pool runs the applicable
+// checks against it, every outbound request passes through a shared rate
 // limiter, and the whole run is bounded by a context so a global timeout or
 // Ctrl+C stops it cleanly.
 //
 // Being gentle to the target is a design goal, not a nicety — the lab being
 // scanned is the operator's own, and a scanner that self-DoSes it is
 // useless. The pool bounds how much work happens at once; the rate limiter
-// bounds how fast requests actually leave.
+// bounds how fast requests actually leave; the shared baseline means N
+// checks on one endpoint cost one request, not N.
 package engine
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/time/rate"
 
@@ -24,10 +30,26 @@ import (
 	"github.com/JonasBorgesLM/security-scanner/internal/ports"
 )
 
-// Config mirrors the engine: section of config.yaml.
+// MaxBodyBytes caps how much of any single response is held in memory.
+// Baselines are kept for the whole run, so an unbounded read would scale
+// with the size of the spec rather than with anything the operator chose.
+const MaxBodyBytes = 2 << 20 // 2 MiB
+
+// ErrPassiveCheckRequest is returned to a passive check that tries to send
+// a request. Passive checks are defined by working from the baseline the
+// engine already collected; one that reaches for the network is a bug in
+// the check, and failing loudly beats silently spending rate budget.
+var ErrPassiveCheckRequest = errors.New("engine: a passive check must not send requests — use Target.Baseline")
+
+// pathParam matches an OpenAPI path template segment such as {id}.
+var pathParam = regexp.MustCompile(`\{[^/{}]+\}`)
+
+// Config mirrors the engine: section of config.yaml, plus the target's base
+// URL that baseline collection needs.
 type Config struct {
-	// MaxConcurrency is the worker pool size: how many checks may be in
-	// flight at once. Must be greater than zero.
+	// BaseURL is the target's base URL; endpoint paths resolve against it.
+	BaseURL string
+	// MaxConcurrency is the worker pool size. Must be greater than zero.
 	MaxConcurrency int
 	// RequestsPerSecond caps the sustained outbound request rate across all
 	// workers combined. Must be greater than zero.
@@ -35,16 +57,16 @@ type Config struct {
 	// Burst is how many requests may be spent at once before the sustained
 	// rate applies. Defaults to 1, i.e. strictly paced.
 	Burst int
-	// TestDestructive opts in to running checks against DELETE/PUT/PATCH
-	// endpoints. Off by default; see BuildJobs.
+	// TestDestructive opts in to touching DELETE/PUT/PATCH endpoints at all,
+	// baseline collection included. Off by default.
 	TestDestructive bool
 }
 
-// Job is one check to run against one endpoint — the unit the worker pool
+// Job is one check to run against one target — the unit the worker pool
 // consumes.
 type Job struct {
-	Endpoint model.Endpoint
-	Check    model.Check
+	Target model.Target
+	Check  model.Check
 }
 
 // Result is the outcome of a single Job. Err being non-nil means the check
@@ -76,6 +98,9 @@ type Engine struct {
 // in-flight attempt by the Authenticator — but it does mean the ceiling is
 // requests_per_second plus the occasional login.
 func New(cfg Config, client ports.HTTPClient) (*Engine, error) {
+	if cfg.BaseURL == "" {
+		return nil, errors.New("engine: BaseURL must not be empty")
+	}
 	if cfg.MaxConcurrency <= 0 {
 		return nil, fmt.Errorf("engine: MaxConcurrency must be greater than 0, got %d", cfg.MaxConcurrency)
 	}
@@ -95,64 +120,127 @@ func New(cfg Config, client ports.HTTPClient) (*Engine, error) {
 	}, nil
 }
 
-// Run executes every job across the worker pool and returns the results in
-// a deterministic order, regardless of which worker finished first.
+// Collect fetches one baseline response per endpoint, in parallel across
+// the pool and paced by the rate limiter.
+//
+// This is the initial collection the rest of the design leans on: passive
+// checks read these responses instead of issuing requests of their own, and
+// active checks diff against them instead of against hardcoded
+// expectations. Doing it once per endpoint rather than once per check keeps
+// the request count proportional to the size of the spec rather than to the
+// spec times the number of enabled checks.
+//
+// Destructive endpoints are not collected at all without the opt-in — there
+// is no such thing as a harmless baseline DELETE.
+//
+// A failed collection still yields a Target, carrying BaselineErr instead of
+// a response. Targets come back in the order their endpoints were given.
+func (e *Engine) Collect(ctx context.Context, endpoints []model.Endpoint) []model.Target {
+	eligible := make([]model.Endpoint, 0, len(endpoints))
+	for _, ep := range endpoints {
+		if ep.Destructive && !e.cfg.TestDestructive {
+			continue
+		}
+		eligible = append(eligible, ep)
+	}
+
+	return runPool(ctx, e.cfg.MaxConcurrency, eligible, e.collectOne)
+}
+
+func (e *Engine) collectOne(ctx context.Context, ep model.Endpoint) model.Target {
+	target := model.Target{Endpoint: ep}
+
+	req, err := e.baselineRequest(ctx, ep)
+	if err != nil {
+		target.BaselineErr = err
+		return target
+	}
+
+	start := time.Now()
+	resp, err := e.client.Do(req)
+	if err != nil {
+		target.BaselineErr = fmt.Errorf("engine: baseline %s %s: %w", ep.Method, ep.Path, err)
+		return target
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxBodyBytes))
+	if err != nil {
+		target.BaselineErr = fmt.Errorf("engine: reading baseline %s %s: %w", ep.Method, ep.Path, err)
+		return target
+	}
+
+	target.Baseline = &model.Response{
+		StatusCode: resp.StatusCode,
+		Headers:    resp.Header,
+		Body:       body,
+		Duration:   time.Since(start),
+	}
+	return target
+}
+
+// baselineRequest builds the untouched request for an endpoint. Path
+// template parameters are filled with a harmless placeholder: the goal is a
+// representative response, and a 404 or 400 is still a perfectly good
+// baseline for, say, a missing-security-header check.
+func (e *Engine) baselineRequest(ctx context.Context, ep model.Endpoint) (*http.Request, error) {
+	target, err := url.JoinPath(e.cfg.BaseURL, pathParam.ReplaceAllString(ep.Path, "1"))
+	if err != nil {
+		return nil, fmt.Errorf("engine: building baseline URL for %s: %w", ep.Path, err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, ep.Method, target, nil)
+	if err != nil {
+		return nil, fmt.Errorf("engine: building baseline request for %s %s: %w", ep.Method, ep.Path, err)
+	}
+	return req, nil
+}
+
+// BuildJobs pairs each target with every check that applies to it.
+//
+// It re-applies the non-destructive gate rather than trusting the caller to
+// have filtered already: skipping destructive endpoints is a safety
+// invariant, and one enforced in a single place is one refactor away from
+// being enforced nowhere.
+//
+// Checks are paired in name order so the resulting job list — and therefore
+// the scan's output — does not depend on the order the registry happened to
+// hand them over in.
+func (e *Engine) BuildJobs(targets []model.Target, checks []model.Check) []Job {
+	ordered := slices.Clone(checks)
+	slices.SortStableFunc(ordered, func(a, b model.Check) int {
+		return strings.Compare(a.Metadata().Name, b.Metadata().Name)
+	})
+
+	var jobs []Job
+	for _, t := range targets {
+		if t.Endpoint.Destructive && !e.cfg.TestDestructive {
+			continue
+		}
+		for _, c := range ordered {
+			applies := c.Metadata().AppliesTo
+			if applies != nil && !applies(t.Endpoint) {
+				continue
+			}
+			jobs = append(jobs, Job{Target: t, Check: c})
+		}
+	}
+	return jobs
+}
+
+// Run executes every job across the worker pool, returning results in job
+// order so identical input produces identical output.
 //
 // Cancelling ctx shuts the pool down gracefully: no further job is handed
 // out, workers finish what they are holding and exit, and the results
 // gathered so far are still returned alongside ctx.Err(). Checks receive
-// ctx too, so an in-flight HTTP request unwinds instead of pinning
-// shutdown behind a hung connection.
+// ctx too, so an in-flight HTTP request unwinds instead of pinning shutdown
+// behind a hung connection.
 func (e *Engine) Run(ctx context.Context, jobs []Job) ([]Result, error) {
 	if len(jobs) == 0 {
 		return nil, ctx.Err()
 	}
-
-	workers := min(e.cfg.MaxConcurrency, len(jobs))
-
-	// jobCh is unbuffered so a cancelled run cannot leave work queued that
-	// a worker would still pick up. resCh is buffered for every job, so a
-	// worker never blocks publishing a result and can always exit.
-	jobCh := make(chan Job)
-	resCh := make(chan Result, len(jobs))
-
-	// runJob recovers panics itself, so nothing here can escape into
-	// WaitGroup.Go, which requires its function not to panic.
-	var wg sync.WaitGroup
-	for range workers {
-		wg.Go(func() {
-			for job := range jobCh {
-				resCh <- e.runJob(ctx, job)
-			}
-		})
-	}
-
-feed:
-	for _, job := range jobs {
-		// Checked before the select so that, once cancelled, no further job
-		// is dispatched — select alone would pick a ready send branch at
-		// random even with ctx.Done() also ready.
-		if ctx.Err() != nil {
-			break
-		}
-		select {
-		case jobCh <- job:
-		case <-ctx.Done():
-			break feed
-		}
-	}
-	close(jobCh)
-
-	wg.Wait()
-	close(resCh)
-
-	results := make([]Result, 0, len(jobs))
-	for r := range resCh {
-		results = append(results, r)
-	}
-	sortResults(results)
-
-	return results, ctx.Err()
+	return runPool(ctx, e.cfg.MaxConcurrency, jobs, e.runJob), ctx.Err()
 }
 
 // runJob executes one check, converting a panic into an ordinary error. A
@@ -160,76 +248,114 @@ feed:
 // that may have been running for minutes; reporting it as a failed Result
 // keeps it visible instead of hiding it.
 func (e *Engine) runJob(ctx context.Context, job Job) (res Result) {
-	name := job.Check.Metadata().Name
-	res = Result{Endpoint: job.Endpoint, CheckName: name}
+	meta := job.Check.Metadata()
+	ep := job.Target.Endpoint
+	res = Result{Endpoint: ep, CheckName: meta.Name}
 
 	defer func() {
 		if r := recover(); r != nil {
 			res.Findings = nil
 			res.Err = fmt.Errorf("engine: check %q panicked on %s %s: %v",
-				name, job.Endpoint.Method, job.Endpoint.Path, r)
+				meta.Name, ep.Method, ep.Path, r)
 		}
 	}()
 
-	findings, err := job.Check.Run(ctx, job.Endpoint, e.client)
+	// A passive check is handed a client that refuses every request, so
+	// "passive checks don't hit the network" holds by construction rather
+	// than by trusting each check to behave.
+	client := e.client
+	if meta.Kind == model.KindPassive {
+		client = deniedClient{}
+	}
+
+	findings, err := job.Check.Run(ctx, job.Target, client)
 	if err != nil {
 		res.Err = fmt.Errorf("engine: check %q on %s %s: %w",
-			name, job.Endpoint.Method, job.Endpoint.Path, err)
+			meta.Name, ep.Method, ep.Path, err)
 		return res
 	}
 	res.Findings = findings
 	return res
 }
 
-// sortResults imposes a stable order on results that completed in
-// nondeterministic worker order, so the same scan of the same target
-// produces the same file twice.
-func sortResults(results []Result) {
-	slices.SortStableFunc(results, func(a, b Result) int {
-		if c := strings.Compare(a.Endpoint.Path, b.Endpoint.Path); c != 0 {
-			return c
-		}
-		if c := strings.Compare(a.Endpoint.Method, b.Endpoint.Method); c != 0 {
-			return c
-		}
-		return strings.Compare(a.CheckName, b.CheckName)
-	})
-}
-
-// BuildJobs pairs each endpoint with every check that applies to it.
+// runPool spreads items across at most workers goroutines and returns the
+// results of those that completed, in input order.
 //
-// It is where the non-destructive default is enforced: an endpoint marked
-// Destructive (DELETE/PUT/PATCH) produces no jobs at all unless
-// testDestructive is set. Checks are paired in name order so the resulting
-// job list — and therefore the scan's output — does not depend on the
-// order the registry happened to hand them over in.
-func BuildJobs(endpoints []model.Endpoint, checks []model.Check, testDestructive bool) []Job {
-	ordered := slices.Clone(checks)
-	slices.SortStableFunc(ordered, func(a, b model.Check) int {
-		return strings.Compare(a.Metadata().Name, b.Metadata().Name)
-	})
+// Preserving input order is what makes output deterministic without a sort:
+// workers finish in whatever order they finish, but each writes only to its
+// own slot. Cancelling ctx stops dispatch; whatever a worker already picked
+// up runs to completion and is included, while undispatched items simply do
+// not appear.
+func runPool[T, R any](ctx context.Context, workers int, items []T, fn func(context.Context, T) R) []R {
+	if len(items) == 0 {
+		return nil
+	}
+	workers = min(workers, len(items))
 
-	var jobs []Job
-	for _, ep := range endpoints {
-		if ep.Destructive && !testDestructive {
-			continue
-		}
-		for _, c := range ordered {
-			applies := c.Metadata().AppliesTo
-			if applies != nil && !applies(ep) {
-				continue
+	// Each goroutine writes only its own indices, and wg.Wait establishes
+	// the happens-before edge for reading them back below.
+	results := make([]R, len(items))
+	completed := make([]bool, len(items))
+
+	type indexed struct {
+		i    int
+		item T
+	}
+	// Unbuffered, so a cancelled run cannot leave work queued that a worker
+	// would still pick up.
+	ch := make(chan indexed)
+
+	// Where it matters, fn recovers panics itself (see runJob), so nothing
+	// here escapes into WaitGroup.Go, which requires its function not to
+	// panic.
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Go(func() {
+			for it := range ch {
+				results[it.i] = fn(ctx, it.item)
+				completed[it.i] = true
 			}
-			jobs = append(jobs, Job{Endpoint: ep, Check: c})
+		})
+	}
+
+feed:
+	for i, item := range items {
+		// Checked before the select so that, once cancelled, no further item
+		// is dispatched — select alone would pick a ready send branch at
+		// random even with ctx.Done() also ready.
+		if ctx.Err() != nil {
+			break
+		}
+		select {
+		case ch <- indexed{i: i, item: item}:
+		case <-ctx.Done():
+			break feed
 		}
 	}
-	return jobs
+	close(ch)
+	wg.Wait()
+
+	out := make([]R, 0, len(items))
+	for i := range items {
+		if completed[i] {
+			out = append(out, results[i])
+		}
+	}
+	return out
+}
+
+// deniedClient is the ports.HTTPClient handed to passive checks.
+type deniedClient struct{}
+
+var _ ports.HTTPClient = deniedClient{}
+
+func (deniedClient) Do(req *http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("%w (attempted %s %s)", ErrPassiveCheckRequest, req.Method, req.URL)
 }
 
 // rateLimitedClient paces every outbound request. It is a ports.HTTPClient
-// decorator rather than a gate around each job on purpose: a passive check
-// that inspects an already-fetched response spends no requests and so must
-// spend no rate budget either, while an active check that issues several
-// requests is charged for each one.
+// decorator rather than a gate around each job on purpose: the thing being
+// limited is a request, and one job may issue none or several.
 type rateLimitedClient struct {
 	inner   ports.HTTPClient
 	limiter *rate.Limiter

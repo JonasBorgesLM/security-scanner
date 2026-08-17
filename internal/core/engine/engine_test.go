@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -71,24 +72,24 @@ func (c *fakeClient) elapsed() time.Duration {
 // stubCheck is a model.Check driven entirely by the test.
 type stubCheck struct {
 	meta model.CheckMetadata
-	run  func(ctx context.Context, ep model.Endpoint, c ports.HTTPClient) ([]model.Finding, error)
+	run  func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error)
 }
 
 var _ model.Check = (*stubCheck)(nil)
 
 func (s *stubCheck) Metadata() model.CheckMetadata { return s.meta }
 
-func (s *stubCheck) Run(ctx context.Context, ep model.Endpoint, c ports.HTTPClient) ([]model.Finding, error) {
-	return s.run(ctx, ep, c)
+func (s *stubCheck) Run(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+	return s.run(ctx, t, c)
 }
 
 // oneRequestCheck issues exactly one request per job — the simplest way to
 // make request count equal job count.
 func oneRequestCheck(name string) *stubCheck {
 	return &stubCheck{
-		meta: model.CheckMetadata{Name: name, Kind: "active"},
-		run: func(ctx context.Context, ep model.Endpoint, c ports.HTTPClient) ([]model.Finding, error) {
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://lab.invalid"+ep.Path, nil)
+		meta: model.CheckMetadata{Name: name, Kind: model.KindActive},
+		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://lab.invalid"+t.Endpoint.Path, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -103,6 +104,36 @@ func oneRequestCheck(name string) *stubCheck {
 	}
 }
 
+// testBaseURL is never dialled: the fake client answers before anything
+// leaves the process.
+const testBaseURL = "http://lab.invalid"
+
+// newEngine builds an Engine with settings fast enough not to slow tests
+// down, varying only the destructive opt-in.
+func newEngine(t *testing.T, testDestructive bool) *Engine {
+	t.Helper()
+	e, err := New(Config{
+		BaseURL:           testBaseURL,
+		MaxConcurrency:    4,
+		RequestsPerSecond: 100000,
+		TestDestructive:   testDestructive,
+	}, &fakeClient{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	return e
+}
+
+// targetsFor wraps endpoints as targets without a baseline, for tests that
+// only exercise job construction.
+func targetsFor(eps []model.Endpoint) []model.Target {
+	targets := make([]model.Target, len(eps))
+	for i, ep := range eps {
+		targets[i] = model.Target{Endpoint: ep}
+	}
+	return targets
+}
+
 func endpoints(n int) []model.Endpoint {
 	eps := make([]model.Endpoint, n)
 	for i := range n {
@@ -114,7 +145,7 @@ func endpoints(n int) []model.Endpoint {
 func jobsFor(eps []model.Endpoint, c model.Check) []Job {
 	jobs := make([]Job, len(eps))
 	for i, ep := range eps {
-		jobs[i] = Job{Endpoint: ep, Check: c}
+		jobs[i] = Job{Target: model.Target{Endpoint: ep}, Check: c}
 	}
 	return jobs
 }
@@ -129,7 +160,7 @@ func TestRun_RespectsRateLimit(t *testing.T) {
 	)
 
 	client := &fakeClient{}
-	e, err := New(Config{MaxConcurrency: 8, RequestsPerSecond: rps, Burst: burst}, client)
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 8, RequestsPerSecond: rps, Burst: burst}, client)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -176,7 +207,7 @@ func TestRun_RateLimitAppliesAcrossWorkers(t *testing.T) {
 	)
 
 	client := &fakeClient{}
-	e, err := New(Config{MaxConcurrency: jobs, RequestsPerSecond: rps, Burst: 1}, client)
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: jobs, RequestsPerSecond: rps, Burst: 1}, client)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -201,7 +232,7 @@ func TestRun_BurstAllowsAnInitialBatch(t *testing.T) {
 	)
 
 	client := &fakeClient{}
-	e, err := New(Config{MaxConcurrency: jobs, RequestsPerSecond: rps, Burst: burst}, client)
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: jobs, RequestsPerSecond: rps, Burst: burst}, client)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -233,8 +264,8 @@ func TestRun_CancellationStopsThePool(t *testing.T) {
 	defer cancel()
 
 	check := &stubCheck{
-		meta: model.CheckMetadata{Name: "slow", Kind: "active"},
-		run: func(ctx context.Context, ep model.Endpoint, c ports.HTTPClient) ([]model.Finding, error) {
+		meta: model.CheckMetadata{Name: "slow", Kind: model.KindActive},
+		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
 			// Cancel once the pool is demonstrably busy.
 			if started.Add(1) == 4 {
 				close(release)
@@ -249,7 +280,7 @@ func TestRun_CancellationStopsThePool(t *testing.T) {
 		},
 	}
 
-	e, err := New(Config{MaxConcurrency: 4, RequestsPerSecond: 1000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 1000}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -299,17 +330,17 @@ func TestRun_InFlightJobFinishesBeforeShutdown(t *testing.T) {
 	var once sync.Once
 
 	check := &stubCheck{
-		meta: model.CheckMetadata{Name: "finisher", Kind: "passive"},
-		run: func(ctx context.Context, ep model.Endpoint, c ports.HTTPClient) ([]model.Finding, error) {
+		meta: model.CheckMetadata{Name: "finisher", Kind: model.KindPassive},
+		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
 			once.Do(func() { close(entered) })
 			// Deliberately ignores ctx: the worker must still wait for it.
 			time.Sleep(50 * time.Millisecond)
 			completed.Add(1)
-			return []model.Finding{{ID: "f-" + ep.Path, CheckName: "finisher"}}, nil
+			return []model.Finding{{ID: "f-" + t.Endpoint.Path, CheckName: "finisher"}}, nil
 		},
 	}
 
-	e, err := New(Config{MaxConcurrency: 1, RequestsPerSecond: 1000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 1000}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -343,8 +374,8 @@ func TestRun_TimeoutStopsThePool(t *testing.T) {
 	defer cancel()
 
 	check := &stubCheck{
-		meta: model.CheckMetadata{Name: "slow", Kind: "active"},
-		run: func(ctx context.Context, ep model.Endpoint, c ports.HTTPClient) ([]model.Finding, error) {
+		meta: model.CheckMetadata{Name: "slow", Kind: model.KindActive},
+		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -355,7 +386,7 @@ func TestRun_TimeoutStopsThePool(t *testing.T) {
 	}
 
 	start := time.Now()
-	e, err := New(Config{MaxConcurrency: 2, RequestsPerSecond: 1000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 2, RequestsPerSecond: 1000}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -376,14 +407,14 @@ func TestRun_CancelledBeforeStartRunsNothing(t *testing.T) {
 
 	var started atomic.Int32
 	check := &stubCheck{
-		meta: model.CheckMetadata{Name: "never", Kind: "active"},
-		run: func(ctx context.Context, ep model.Endpoint, c ports.HTTPClient) ([]model.Finding, error) {
+		meta: model.CheckMetadata{Name: "never", Kind: model.KindActive},
+		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
 			started.Add(1)
 			return nil, nil
 		},
 	}
 
-	e, err := New(Config{MaxConcurrency: 4, RequestsPerSecond: 1000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 1000}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -402,7 +433,7 @@ func TestRun_CancelledBeforeStartRunsNothing(t *testing.T) {
 }
 
 func TestRun_LeavesNoGoroutinesBehind(t *testing.T) {
-	e, err := New(Config{MaxConcurrency: 8, RequestsPerSecond: 10000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 8, RequestsPerSecond: 10000}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -440,8 +471,8 @@ func TestRun_NeverExceedsMaxConcurrency(t *testing.T) {
 
 	var inFlight, peak atomic.Int32
 	check := &stubCheck{
-		meta: model.CheckMetadata{Name: "counter", Kind: "active"},
-		run: func(ctx context.Context, ep model.Endpoint, c ports.HTTPClient) ([]model.Finding, error) {
+		meta: model.CheckMetadata{Name: "counter", Kind: model.KindActive},
+		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
 			n := inFlight.Add(1)
 			for {
 				old := peak.Load()
@@ -455,7 +486,7 @@ func TestRun_NeverExceedsMaxConcurrency(t *testing.T) {
 		},
 	}
 
-	e, err := New(Config{MaxConcurrency: maxConcurrency, RequestsPerSecond: 100000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: maxConcurrency, RequestsPerSecond: 100000}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -474,7 +505,7 @@ func TestRun_NeverExceedsMaxConcurrency(t *testing.T) {
 
 func TestRun_MoreWorkersThanJobsIsHarmless(t *testing.T) {
 	client := &fakeClient{}
-	e, err := New(Config{MaxConcurrency: 32, RequestsPerSecond: 10000}, client)
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 32, RequestsPerSecond: 10000}, client)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -489,7 +520,7 @@ func TestRun_MoreWorkersThanJobsIsHarmless(t *testing.T) {
 }
 
 func TestRun_NoJobs(t *testing.T) {
-	e, err := New(Config{MaxConcurrency: 4, RequestsPerSecond: 10}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 10}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -513,22 +544,23 @@ func TestRun_ResultOrderIsDeterministic(t *testing.T) {
 		{Method: "GET", Path: "/a"},
 		{Method: "GET", Path: "/b"},
 	}
+	// Deliberately out of name order, to prove BuildJobs imposes one.
 	checks := []model.Check{oneRequestCheck("zeta"), oneRequestCheck("alpha")}
 
-	e, err := New(Config{MaxConcurrency: 8, RequestsPerSecond: 100000}, &fakeClient{})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
+	e := newEngine(t, false)
+	jobs := e.BuildJobs(targetsFor(eps), checks)
+
+	// Endpoints keep the order they were discovered in; checks are paired
+	// alphabetically within each endpoint.
+	want := []string{
+		"GET /c alpha", "GET /c zeta",
+		"POST /a alpha", "POST /a zeta",
+		"GET /a alpha", "GET /a zeta",
+		"GET /b alpha", "GET /b zeta",
 	}
 
 	var first []string
 	for run := range 15 {
-		var jobs []Job
-		for _, ep := range eps {
-			for _, c := range checks {
-				jobs = append(jobs, Job{Endpoint: ep, Check: c})
-			}
-		}
-
 		results, err := e.Run(t.Context(), jobs)
 		if err != nil {
 			t.Fatalf("Run() error = %v", err)
@@ -541,17 +573,12 @@ func TestRun_ResultOrderIsDeterministic(t *testing.T) {
 
 		if run == 0 {
 			first = got
-			want := []string{
-				"GET /a alpha", "GET /a zeta",
-				"POST /a alpha", "POST /a zeta",
-				"GET /b alpha", "GET /b zeta",
-				"GET /c alpha", "GET /c zeta",
-			}
 			if strings.Join(got, "|") != strings.Join(want, "|") {
 				t.Fatalf("order = %v, want %v", got, want)
 			}
 			continue
 		}
+		// Workers finish in arbitrary order; the output must not.
 		if strings.Join(got, "|") != strings.Join(first, "|") {
 			t.Fatalf("run %d order = %v, differs from first run %v", run, got, first)
 		}
@@ -561,16 +588,16 @@ func TestRun_ResultOrderIsDeterministic(t *testing.T) {
 func TestRun_CheckErrorIsReportedNotFatal(t *testing.T) {
 	boom := errors.New("check exploded")
 	failing := &stubCheck{
-		meta: model.CheckMetadata{Name: "failing", Kind: "active"},
-		run: func(ctx context.Context, ep model.Endpoint, c ports.HTTPClient) ([]model.Finding, error) {
-			if ep.Path == "/r01" {
+		meta: model.CheckMetadata{Name: "failing", Kind: model.KindActive},
+		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+			if t.Endpoint.Path == "/r01" {
 				return nil, boom
 			}
 			return []model.Finding{{ID: "ok"}}, nil
 		},
 	}
 
-	e, err := New(Config{MaxConcurrency: 4, RequestsPerSecond: 10000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 10000}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -604,16 +631,16 @@ func TestRun_CheckErrorIsReportedNotFatal(t *testing.T) {
 
 func TestRun_PanickingCheckBecomesAnError(t *testing.T) {
 	panicky := &stubCheck{
-		meta: model.CheckMetadata{Name: "panicky", Kind: "active"},
-		run: func(ctx context.Context, ep model.Endpoint, c ports.HTTPClient) ([]model.Finding, error) {
-			if ep.Path == "/r00" {
+		meta: model.CheckMetadata{Name: "panicky", Kind: model.KindActive},
+		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+			if t.Endpoint.Path == "/r00" {
 				panic("nil map write or similar")
 			}
 			return []model.Finding{{ID: "ok"}}, nil
 		},
 	}
 
-	e, err := New(Config{MaxConcurrency: 2, RequestsPerSecond: 10000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 2, RequestsPerSecond: 10000}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -642,15 +669,15 @@ func TestRun_PanickingCheckBecomesAnError(t *testing.T) {
 
 func TestRun_FindingsAreReturned(t *testing.T) {
 	check := &stubCheck{
-		meta: model.CheckMetadata{Name: "finder", Kind: "passive"},
-		run: func(ctx context.Context, ep model.Endpoint, c ports.HTTPClient) ([]model.Finding, error) {
+		meta: model.CheckMetadata{Name: "finder", Kind: model.KindPassive},
+		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
 			return []model.Finding{
-				{ID: "f-" + ep.Path, CheckName: "finder", Severity: "low"},
+				{ID: "f-" + t.Endpoint.Path, CheckName: "finder", Severity: "low"},
 			}, nil
 		},
 	}
 
-	e, err := New(Config{MaxConcurrency: 4, RequestsPerSecond: 10000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 10000}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -674,14 +701,14 @@ func TestRun_FindingsAreReturned(t *testing.T) {
 func TestRun_PassiveChecksSpendNoRateBudget(t *testing.T) {
 	client := &fakeClient{}
 	passive := &stubCheck{
-		meta: model.CheckMetadata{Name: "passive", Kind: "passive"},
-		run: func(ctx context.Context, ep model.Endpoint, c ports.HTTPClient) ([]model.Finding, error) {
+		meta: model.CheckMetadata{Name: "passive", Kind: model.KindPassive},
+		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
 			return nil, nil
 		},
 	}
 
 	// 1 req/s would make even two requests take a second.
-	e, err := New(Config{MaxConcurrency: 4, RequestsPerSecond: 1, Burst: 1}, client)
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 1, Burst: 1}, client)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -711,11 +738,12 @@ func TestNew_RejectsInvalidConfig(t *testing.T) {
 		cfg    Config
 		client ports.HTTPClient
 	}{
-		{"zero concurrency", Config{MaxConcurrency: 0, RequestsPerSecond: 10}, &fakeClient{}},
-		{"negative concurrency", Config{MaxConcurrency: -1, RequestsPerSecond: 10}, &fakeClient{}},
-		{"zero rate", Config{MaxConcurrency: 1, RequestsPerSecond: 0}, &fakeClient{}},
-		{"negative rate", Config{MaxConcurrency: 1, RequestsPerSecond: -5}, &fakeClient{}},
-		{"nil client", Config{MaxConcurrency: 1, RequestsPerSecond: 10}, nil},
+		{"empty base URL", Config{MaxConcurrency: 1, RequestsPerSecond: 10}, &fakeClient{}},
+		{"zero concurrency", Config{BaseURL: testBaseURL, MaxConcurrency: 0, RequestsPerSecond: 10}, &fakeClient{}},
+		{"negative concurrency", Config{BaseURL: testBaseURL, MaxConcurrency: -1, RequestsPerSecond: 10}, &fakeClient{}},
+		{"zero rate", Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 0}, &fakeClient{}},
+		{"negative rate", Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: -5}, &fakeClient{}},
+		{"nil client", Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 10}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -727,7 +755,7 @@ func TestNew_RejectsInvalidConfig(t *testing.T) {
 }
 
 func TestNew_DefaultsBurstToOne(t *testing.T) {
-	e, err := New(Config{MaxConcurrency: 1, RequestsPerSecond: 10}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 10}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -746,12 +774,12 @@ func TestBuildJobs_SkipsDestructiveByDefault(t *testing.T) {
 	}
 	checks := []model.Check{oneRequestCheck("c1")}
 
-	jobs := BuildJobs(eps, checks, false)
+	jobs := newEngine(t, false).BuildJobs(targetsFor(eps), checks)
 	if len(jobs) != 1 {
 		t.Fatalf("got %d jobs, want 1 — destructive endpoints must be skipped without opt-in", len(jobs))
 	}
-	if jobs[0].Endpoint.Method != "GET" {
-		t.Errorf("job endpoint = %s, want the non-destructive GET", jobs[0].Endpoint.Method)
+	if jobs[0].Target.Endpoint.Method != "GET" {
+		t.Errorf("job endpoint = %s, want the non-destructive GET", jobs[0].Target.Endpoint.Method)
 	}
 }
 
@@ -762,7 +790,7 @@ func TestBuildJobs_IncludesDestructiveWhenOptedIn(t *testing.T) {
 	}
 	checks := []model.Check{oneRequestCheck("c1")}
 
-	if got := len(BuildJobs(eps, checks, true)); got != 2 {
+	if got := len(newEngine(t, true).BuildJobs(targetsFor(eps), checks)); got != 2 {
 		t.Errorf("got %d jobs, want 2 with test_destructive enabled", got)
 	}
 }
@@ -773,7 +801,7 @@ func TestBuildJobs_HonoursAppliesTo(t *testing.T) {
 			Name:      "post-only",
 			AppliesTo: func(ep model.Endpoint) bool { return ep.Method == "POST" },
 		},
-		run: func(context.Context, model.Endpoint, ports.HTTPClient) ([]model.Finding, error) {
+		run: func(context.Context, model.Target, ports.HTTPClient) ([]model.Finding, error) {
 			return nil, nil
 		},
 	}
@@ -784,15 +812,15 @@ func TestBuildJobs_HonoursAppliesTo(t *testing.T) {
 		{Method: "POST", Path: "/a"},
 	}
 
-	jobs := BuildJobs(eps, []model.Check{onlyPost, everything}, false)
+	jobs := newEngine(t, false).BuildJobs(targetsFor(eps), []model.Check{onlyPost, everything})
 
 	// GET gets only "all"; POST gets both.
 	if len(jobs) != 3 {
 		t.Fatalf("got %d jobs, want 3", len(jobs))
 	}
 	for _, j := range jobs {
-		if j.Check.Metadata().Name == "post-only" && j.Endpoint.Method != "POST" {
-			t.Errorf("post-only check paired with %s", j.Endpoint.Method)
+		if j.Check.Metadata().Name == "post-only" && j.Target.Endpoint.Method != "POST" {
+			t.Errorf("post-only check paired with %s", j.Target.Endpoint.Method)
 		}
 	}
 }
@@ -802,15 +830,16 @@ func TestBuildJobs_OrderIsDeterministic(t *testing.T) {
 	// Deliberately out of name order.
 	checks := []model.Check{oneRequestCheck("zulu"), oneRequestCheck("alpha"), oneRequestCheck("mike")}
 
-	want := BuildJobs(eps, checks, false)
+	e := newEngine(t, false)
+	want := e.BuildJobs(targetsFor(eps), checks)
 	for run := range 10 {
-		got := BuildJobs(eps, checks, false)
+		got := e.BuildJobs(targetsFor(eps), checks)
 		if len(got) != len(want) {
 			t.Fatalf("run %d: got %d jobs, want %d", run, len(got), len(want))
 		}
 		for i := range got {
 			if got[i].Check.Metadata().Name != want[i].Check.Metadata().Name ||
-				got[i].Endpoint.Path != want[i].Endpoint.Path {
+				got[i].Target.Endpoint.Path != want[i].Target.Endpoint.Path {
 				t.Fatalf("run %d differs at index %d", run, i)
 			}
 		}
@@ -827,7 +856,7 @@ func TestBuildJobs_OrderIsDeterministic(t *testing.T) {
 func TestBuildJobs_DoesNotMutateCallerSlice(t *testing.T) {
 	checks := []model.Check{oneRequestCheck("zulu"), oneRequestCheck("alpha")}
 
-	BuildJobs(endpoints(1), checks, false)
+	newEngine(t, false).BuildJobs(targetsFor(endpoints(1)), checks)
 
 	if got := checks[0].Metadata().Name; got != "zulu" {
 		t.Errorf("caller's slice was reordered: checks[0] = %q, want zulu", got)
@@ -835,10 +864,10 @@ func TestBuildJobs_DoesNotMutateCallerSlice(t *testing.T) {
 }
 
 func TestBuildJobs_EmptyInputs(t *testing.T) {
-	if got := BuildJobs(nil, []model.Check{oneRequestCheck("c")}, false); len(got) != 0 {
+	if got := newEngine(t, false).BuildJobs(nil, []model.Check{oneRequestCheck("c")}); len(got) != 0 {
 		t.Errorf("got %d jobs for no endpoints, want 0", len(got))
 	}
-	if got := BuildJobs(endpoints(3), nil, false); len(got) != 0 {
+	if got := newEngine(t, false).BuildJobs(targetsFor(endpoints(3)), nil); len(got) != 0 {
 		t.Errorf("got %d jobs for no checks, want 0", len(got))
 	}
 }
@@ -884,5 +913,488 @@ func TestRateLimitedClient_CancelledContextAbortsTheWait(t *testing.T) {
 	}
 	if got := inner.count(); got != 1 {
 		t.Errorf("inner client saw %d requests, want 1 — the cancelled one must not be sent", got)
+	}
+}
+
+// ---------------------------------------------------------------- collection
+
+// recordingClient answers every request and remembers what it was asked for.
+type recordingClient struct {
+	mu       sync.Mutex
+	requests []string
+	status   int
+	headers  http.Header
+	body     string
+	err      error
+}
+
+var _ ports.HTTPClient = (*recordingClient)(nil)
+
+func (c *recordingClient) Do(req *http.Request) (*http.Response, error) {
+	c.mu.Lock()
+	c.requests = append(c.requests, req.Method+" "+req.URL.String())
+	c.mu.Unlock()
+
+	if c.err != nil {
+		return nil, c.err
+	}
+	status := c.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	headers := c.headers
+	if headers == nil {
+		headers = http.Header{}
+	}
+	return &http.Response{
+		StatusCode: status,
+		Header:     headers,
+		Body:       io.NopCloser(strings.NewReader(c.body)),
+		Request:    req,
+	}, nil
+}
+
+func (c *recordingClient) seen() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.requests)
+}
+
+func newCollectEngine(t *testing.T, client ports.HTTPClient, testDestructive bool) *Engine {
+	t.Helper()
+	e, err := New(Config{
+		BaseURL:           "http://lab.invalid",
+		MaxConcurrency:    4,
+		RequestsPerSecond: 100000,
+		TestDestructive:   testDestructive,
+	}, client)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	return e
+}
+
+func TestCollect_CapturesOneBaselinePerEndpoint(t *testing.T) {
+	client := &recordingClient{
+		status:  http.StatusOK,
+		headers: http.Header{"X-Frame-Options": []string{"DENY"}},
+		body:    `{"ok":true}`,
+	}
+	e := newCollectEngine(t, client, false)
+
+	eps := []model.Endpoint{
+		{Method: "GET", Path: "/items"},
+		{Method: "POST", Path: "/items"},
+	}
+
+	targets := e.Collect(t.Context(), eps)
+
+	if len(targets) != 2 {
+		t.Fatalf("got %d targets, want 2", len(targets))
+	}
+	if got := len(client.seen()); got != 2 {
+		t.Errorf("client saw %d requests, want exactly one baseline per endpoint", got)
+	}
+	for _, target := range targets {
+		if target.BaselineErr != nil {
+			t.Fatalf("%s: BaselineErr = %v", target.Endpoint.Path, target.BaselineErr)
+		}
+		if target.Baseline == nil {
+			t.Fatalf("%s: Baseline is nil", target.Endpoint.Path)
+		}
+		if target.Baseline.StatusCode != http.StatusOK {
+			t.Errorf("StatusCode = %d, want 200", target.Baseline.StatusCode)
+		}
+		if got := target.Baseline.Headers.Get("X-Frame-Options"); got != "DENY" {
+			t.Errorf("headers not captured: X-Frame-Options = %q", got)
+		}
+		if string(target.Baseline.Body) != `{"ok":true}` {
+			t.Errorf("Body = %q, want the response body", target.Baseline.Body)
+		}
+	}
+}
+
+func TestCollect_SubstitutesPathParameters(t *testing.T) {
+	client := &recordingClient{}
+	e := newCollectEngine(t, client, false)
+
+	e.Collect(t.Context(), []model.Endpoint{
+		{Method: "GET", Path: "/items/{id}"},
+		{Method: "GET", Path: "/users/{userId}/posts/{postId}"},
+	})
+
+	want := []string{
+		"GET http://lab.invalid/items/1",
+		"GET http://lab.invalid/users/1/posts/1",
+	}
+	got := client.seen()
+	slices.Sort(got)
+	slices.Sort(want)
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("requests = %v, want %v — path templates must be filled in", got, want)
+	}
+}
+
+func TestCollect_NeverTouchesDestructiveEndpointsByDefault(t *testing.T) {
+	client := &recordingClient{}
+	e := newCollectEngine(t, client, false)
+
+	targets := e.Collect(t.Context(), []model.Endpoint{
+		{Method: "GET", Path: "/items"},
+		{Method: "DELETE", Path: "/items/{id}", Destructive: true},
+		{Method: "PUT", Path: "/items/{id}", Destructive: true},
+	})
+
+	if len(targets) != 1 {
+		t.Errorf("got %d targets, want 1 — destructive endpoints must not be collected", len(targets))
+	}
+	for _, r := range client.seen() {
+		if strings.HasPrefix(r, "DELETE") || strings.HasPrefix(r, "PUT") {
+			t.Errorf("a baseline %s was sent — there is no harmless baseline DELETE", r)
+		}
+	}
+}
+
+func TestCollect_IncludesDestructiveWhenOptedIn(t *testing.T) {
+	client := &recordingClient{}
+	e := newCollectEngine(t, client, true)
+
+	targets := e.Collect(t.Context(), []model.Endpoint{
+		{Method: "GET", Path: "/items"},
+		{Method: "DELETE", Path: "/items/{id}", Destructive: true},
+	})
+
+	if len(targets) != 2 {
+		t.Errorf("got %d targets, want 2 with test_destructive enabled", len(targets))
+	}
+}
+
+func TestCollect_FailureBecomesBaselineErrNotAMissingTarget(t *testing.T) {
+	boom := errors.New("connection refused")
+	e := newCollectEngine(t, &recordingClient{err: boom}, false)
+
+	targets := e.Collect(t.Context(), endpoints(3))
+
+	if len(targets) != 3 {
+		t.Fatalf("got %d targets, want 3 — a failed collection still yields a target", len(targets))
+	}
+	for _, target := range targets {
+		if target.Baseline != nil {
+			t.Errorf("%s: Baseline is non-nil despite the failure", target.Endpoint.Path)
+		}
+		if !errors.Is(target.BaselineErr, boom) {
+			t.Errorf("%s: BaselineErr = %v, want it to wrap the transport error", target.Endpoint.Path, target.BaselineErr)
+		}
+	}
+}
+
+func TestCollect_PreservesEndpointOrder(t *testing.T) {
+	e := newCollectEngine(t, &recordingClient{}, false)
+
+	eps := []model.Endpoint{
+		{Method: "GET", Path: "/zzz"},
+		{Method: "GET", Path: "/aaa"},
+		{Method: "GET", Path: "/mmm"},
+	}
+
+	for range 10 {
+		targets := e.Collect(t.Context(), eps)
+		if len(targets) != 3 {
+			t.Fatalf("got %d targets, want 3", len(targets))
+		}
+		for i, ep := range eps {
+			if targets[i].Endpoint.Path != ep.Path {
+				t.Fatalf("targets[%d] = %s, want %s", i, targets[i].Endpoint.Path, ep.Path)
+			}
+		}
+	}
+}
+
+func TestCollect_RespectsCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	client := &recordingClient{}
+	e := newCollectEngine(t, client, false)
+
+	targets := e.Collect(ctx, endpoints(20))
+
+	if len(targets) != 0 {
+		t.Errorf("got %d targets, want 0 for an already-cancelled context", len(targets))
+	}
+	if got := len(client.seen()); got != 0 {
+		t.Errorf("client saw %d requests, want 0", got)
+	}
+}
+
+func TestCollect_NoEndpoints(t *testing.T) {
+	e := newCollectEngine(t, &recordingClient{}, false)
+	if got := e.Collect(t.Context(), nil); len(got) != 0 {
+		t.Errorf("got %d targets, want 0", len(got))
+	}
+}
+
+// ------------------------------------------------------- passive check wiring
+
+// A passive check must work from the collected baseline. The engine hands
+// it a client that refuses, so the rule holds by construction.
+func TestRun_PassiveCheckIsDeniedTheNetwork(t *testing.T) {
+	client := &recordingClient{}
+	e := newCollectEngine(t, client, false)
+
+	var attemptErr error
+	passive := &stubCheck{
+		meta: model.CheckMetadata{Name: "nosy-passive", Kind: model.KindPassive},
+		run: func(ctx context.Context, target model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://lab.invalid/sneaky", nil)
+			if err != nil {
+				return nil, err
+			}
+			_, attemptErr = c.Do(req)
+			return nil, nil
+		},
+	}
+
+	targets := e.Collect(t.Context(), endpoints(1))
+	before := len(client.seen())
+
+	if _, err := e.Run(t.Context(), e.BuildJobs(targets, []model.Check{passive})); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if !errors.Is(attemptErr, ErrPassiveCheckRequest) {
+		t.Errorf("passive check's Do() error = %v, want ErrPassiveCheckRequest", attemptErr)
+	}
+	if got := len(client.seen()); got != before {
+		t.Errorf("client saw %d extra requests, want 0 — the passive check reached the network", got-before)
+	}
+}
+
+// An active check gets the real (rate-limited) client and can reach out.
+func TestRun_ActiveCheckKeepsTheNetwork(t *testing.T) {
+	client := &recordingClient{}
+	e := newCollectEngine(t, client, false)
+
+	active := &stubCheck{
+		meta: model.CheckMetadata{Name: "prober", Kind: model.KindActive},
+		run: func(ctx context.Context, target model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://lab.invalid/probe", nil)
+			if err != nil {
+				return nil, err
+			}
+			resp, err := c.Do(req)
+			if err != nil {
+				return nil, err
+			}
+			defer resp.Body.Close()
+			return nil, nil
+		},
+	}
+
+	targets := e.Collect(t.Context(), endpoints(1))
+	before := len(client.seen())
+
+	results, err := e.Run(t.Context(), e.BuildJobs(targets, []model.Check{active}))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if results[0].Err != nil {
+		t.Errorf("Result.Err = %v, want nil", results[0].Err)
+	}
+	if got := len(client.seen()) - before; got != 1 {
+		t.Errorf("client saw %d extra requests, want 1", got)
+	}
+}
+
+// The point of collecting once: many checks on one endpoint still cost a
+// single request, and each of them sees the same response.
+func TestRun_ManyPassiveChecksShareOneCollectedResponse(t *testing.T) {
+	client := &recordingClient{
+		status:  http.StatusOK,
+		headers: http.Header{"Server": []string{"lab/1.0"}},
+		body:    "hello",
+	}
+	e := newCollectEngine(t, client, false)
+
+	var mu sync.Mutex
+	seenBodies := map[string]int{}
+
+	makeCheck := func(name string) model.Check {
+		return &stubCheck{
+			meta: model.CheckMetadata{Name: name, Kind: model.KindPassive},
+			run: func(ctx context.Context, target model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+				if target.Baseline == nil {
+					return nil, errors.New("no baseline")
+				}
+				mu.Lock()
+				seenBodies[string(target.Baseline.Body)]++
+				mu.Unlock()
+				if target.Baseline.Headers.Get("Server") != "lab/1.0" {
+					return nil, errors.New("headers missing from baseline")
+				}
+				return []model.Finding{{ID: name}}, nil
+			},
+		}
+	}
+	checks := []model.Check{makeCheck("a"), makeCheck("b"), makeCheck("c"), makeCheck("d")}
+
+	eps := endpoints(3)
+	targets := e.Collect(t.Context(), eps)
+
+	if got := len(client.seen()); got != len(eps) {
+		t.Fatalf("collection made %d requests, want %d (one per endpoint)", got, len(eps))
+	}
+
+	results, err := e.Run(t.Context(), e.BuildJobs(targets, checks))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if len(results) != len(eps)*len(checks) {
+		t.Errorf("got %d results, want %d", len(results), len(eps)*len(checks))
+	}
+	for _, r := range results {
+		if r.Err != nil {
+			t.Errorf("%s on %s: Err = %v", r.CheckName, r.Endpoint.Path, r.Err)
+		}
+	}
+	// Still only the collection requests: 12 checks, 3 requests.
+	if got := len(client.seen()); got != len(eps) {
+		t.Errorf("client saw %d requests after running %d checks, want %d", got, len(results), len(eps))
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if seenBodies["hello"] != len(eps)*len(checks) {
+		t.Errorf("checks saw the shared body %d times, want %d", seenBodies["hello"], len(eps)*len(checks))
+	}
+}
+
+func TestRun_CheckSeesBaselineError(t *testing.T) {
+	boom := errors.New("connection refused")
+	e := newCollectEngine(t, &recordingClient{err: boom}, false)
+
+	var sawErr bool
+	check := &stubCheck{
+		meta: model.CheckMetadata{Name: "careful", Kind: model.KindPassive},
+		run: func(ctx context.Context, target model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+			if target.Baseline == nil && target.BaselineErr != nil {
+				sawErr = true
+				// Cannot conclude anything: report nothing rather than guess.
+				return nil, nil
+			}
+			return []model.Finding{{ID: "should not happen"}}, nil
+		},
+	}
+
+	targets := e.Collect(t.Context(), endpoints(1))
+	results, err := e.Run(t.Context(), e.BuildJobs(targets, []model.Check{check}))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if !sawErr {
+		t.Error("the check did not observe BaselineErr")
+	}
+	if len(results) != 1 || len(results[0].Findings) != 0 {
+		t.Errorf("results = %+v, want one result with no findings", results)
+	}
+}
+
+func TestDeniedClient_NamesTheAttemptedRequest(t *testing.T) {
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://lab.invalid/x", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+
+	_, gotErr := deniedClient{}.Do(req)
+	if !errors.Is(gotErr, ErrPassiveCheckRequest) {
+		t.Fatalf("Do() error = %v, want ErrPassiveCheckRequest", gotErr)
+	}
+	if !strings.Contains(gotErr.Error(), "POST") || !strings.Contains(gotErr.Error(), "/x") {
+		t.Errorf("error = %q, want it to name the attempted request", gotErr)
+	}
+}
+
+// errReader fails part-way through the body, simulating a connection that
+// drops mid-response.
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+// brokenBodyClient answers with a response whose body cannot be read.
+type brokenBodyClient struct{ err error }
+
+var _ ports.HTTPClient = (*brokenBodyClient)(nil)
+
+func (c *brokenBodyClient) Do(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body:       io.NopCloser(errReader{err: c.err}),
+		Request:    req,
+	}, nil
+}
+
+func TestCollect_UnreadableBodyBecomesBaselineErr(t *testing.T) {
+	boom := errors.New("unexpected EOF")
+	e := newCollectEngine(t, &brokenBodyClient{err: boom}, false)
+
+	targets := e.Collect(t.Context(), endpoints(1))
+
+	if len(targets) != 1 {
+		t.Fatalf("got %d targets, want 1", len(targets))
+	}
+	if targets[0].Baseline != nil {
+		t.Error("Baseline is non-nil despite an unreadable body")
+	}
+	if !errors.Is(targets[0].BaselineErr, boom) {
+		t.Errorf("BaselineErr = %v, want it to wrap the read error", targets[0].BaselineErr)
+	}
+}
+
+func TestCollect_UnbuildableRequestBecomesBaselineErr(t *testing.T) {
+	client := &recordingClient{}
+	// A method with a space in it is not a valid HTTP method, so building
+	// the request fails before anything is sent.
+	e, err := New(Config{
+		BaseURL:           testBaseURL,
+		MaxConcurrency:    2,
+		RequestsPerSecond: 100000,
+	}, client)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	targets := e.Collect(t.Context(), []model.Endpoint{{Method: "BAD METHOD", Path: "/x"}})
+
+	if len(targets) != 1 {
+		t.Fatalf("got %d targets, want 1", len(targets))
+	}
+	if targets[0].BaselineErr == nil {
+		t.Error("BaselineErr = nil, want an error for an unbuildable request")
+	}
+	if got := len(client.seen()); got != 0 {
+		t.Errorf("client saw %d requests, want 0 — nothing should be sent", got)
+	}
+}
+
+func TestCollect_UnjoinableBaseURLBecomesBaselineErr(t *testing.T) {
+	e, err := New(Config{
+		BaseURL:           "http://lab.invalid/\x7f\x00",
+		MaxConcurrency:    2,
+		RequestsPerSecond: 100000,
+	}, &recordingClient{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	targets := e.Collect(t.Context(), endpoints(1))
+
+	if len(targets) != 1 {
+		t.Fatalf("got %d targets, want 1", len(targets))
+	}
+	if targets[0].BaselineErr == nil {
+		t.Error("BaselineErr = nil, want an error for a base URL that cannot be joined")
 	}
 }
