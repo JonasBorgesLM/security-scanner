@@ -54,6 +54,10 @@ type Credentials struct {
 
 // Auth configures the automatic login + re-auth described in
 // internal/core/auth. Field names and semantics mirror auth.Config.
+//
+// The whole block is optional: a target whose spec declares no protected
+// routes can be scanned with no auth section at all. When present, it must
+// be complete — see validateAuth and Configured.
 type Auth struct {
 	LoginEndpoint string      `yaml:"login_endpoint"`
 	Method        string      `yaml:"method"`
@@ -61,6 +65,27 @@ type Auth struct {
 	TokenPath     string      `yaml:"token_path"`
 	TokenHeader   string      `yaml:"token_header"`
 	TokenPrefix   string      `yaml:"token_prefix"`
+}
+
+// Configured reports whether an auth block was supplied. Validation
+// guarantees that when this is true the block is complete, so callers can
+// use it as the single signal for "credentials are available". LoginEndpoint
+// is the anchor field: the login flow is meaningless without it.
+func (a Auth) Configured() bool {
+	return a.LoginEndpoint != ""
+}
+
+// anyFieldSet reports whether the user filled in any auth field at all. It
+// distinguishes "no auth section" (valid, for a public target) from "a
+// partial auth section" (a mistake worth reporting field by field).
+func (a Auth) anyFieldSet() bool {
+	return a.LoginEndpoint != "" ||
+		a.Method != "" ||
+		a.Credentials.Username != "" ||
+		a.Credentials.Password != "" ||
+		a.TokenPath != "" ||
+		a.TokenHeader != "" ||
+		a.TokenPrefix != ""
 }
 
 // Engine tunes the worker pool + rate limiter that drive active checks.
@@ -155,7 +180,8 @@ func expandTree(root *yaml.Node) error {
 		if n.Kind == yaml.ScalarNode {
 			expanded, err := envexpand.Expand(n.Value)
 			if err != nil {
-				if e, ok := errors.AsType[*envexpand.MissingVarsError](err); ok {
+				var e *envexpand.MissingVarsError
+				if errors.As(err, &e) {
 					for _, name := range e.Names {
 						missing[name] = true
 					}
@@ -246,18 +272,29 @@ func (c *Config) validateScope(errs *validationErrors, targetHost string) {
 	}
 }
 
+// validateAuth treats the auth block as optional but all-or-nothing. An
+// empty block is valid: a target whose spec has no protected routes needs no
+// credentials, and forcing dummy ones just to pass validation would be
+// noise. But a half-filled block is almost always a mistake — a typo'd key,
+// a credential left out — so once any field is set, the whole required set
+// must be present. Whether the target actually needs auth is a question only
+// the spec can answer, so that cross-check lives in the scan/attack commands,
+// not here.
 func (c *Config) validateAuth(errs *validationErrors) {
+	if !c.Auth.anyFieldSet() {
+		return
+	}
 	if c.Auth.LoginEndpoint == "" {
-		errs.add("auth.login_endpoint is required")
+		errs.add("auth.login_endpoint is required when any auth field is set")
 	}
 	if c.Auth.TokenPath == "" {
-		errs.add("auth.token_path is required")
+		errs.add("auth.token_path is required when any auth field is set")
 	}
 	if c.Auth.Credentials.Username == "" {
-		errs.add("auth.credentials.username is required")
+		errs.add("auth.credentials.username is required when any auth field is set")
 	}
 	if c.Auth.Credentials.Password == "" {
-		errs.add("auth.credentials.password is required")
+		errs.add("auth.credentials.password is required when any auth field is set")
 	}
 }
 

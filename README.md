@@ -34,7 +34,8 @@ A ferramenta impõe essa restrição tecnicamente, não só por convenção:
 
 ## Requisitos
 
-- Go 1.26 ou superior (veja `go.mod`)
+- Go 1.25 ou superior (veja `go.mod`). O piso é ditado pelas dependências
+  (`kin-openapi`, `golang.org/x/time`), não pelo código do scanner em si.
 
 ## Build
 
@@ -58,13 +59,25 @@ de uma vez, não um por execução):
 | `schema_version` | Precisa ser `1` |
 | `target.base_url` | URL absoluta da API sob teste |
 | `scope.allowed_hosts` | Allowlist de `host:porta`; precisa incluir o host do target |
-| `auth.login_endpoint` | Rota de login, resolvida contra o `base_url` |
-| `auth.credentials.username` / `password` | Credenciais do lab |
-| `auth.token_path` | Caminho em notação de ponto até o token no JSON de resposta |
 | `engine.max_concurrency` | Tamanho do worker pool (> 0) |
 | `engine.requests_per_second` | Limite de taxa (> 0) |
 | `engine.timeout` | Deadline global da execução, ex. `5m` |
 | `checks.enabled` | Lista de checks a executar |
+
+O bloco **`auth` é opcional**: um alvo cujo spec não declara nenhuma rota
+protegida pode ser escaneado sem seção `auth` alguma. Quando presente, ele é
+**tudo-ou-nada** — se qualquer campo de auth aparecer, o conjunto completo é
+exigido (`login_endpoint`, `token_path`, `credentials.username`,
+`credentials.password`), porque um bloco pela metade quase sempre é um erro
+(chave digitada errada, campo esquecido). Se o spec tiver rotas protegidas mas
+o config não tiver bloco `auth`, o `scan`/`attack` falha com mensagem clara em
+vez de escanear as rotas sem autenticação.
+
+| Campo (auth, opcional) | Descrição |
+|---|---|
+| `auth.login_endpoint` | Rota de login, resolvida contra o `base_url` |
+| `auth.credentials.username` / `password` | Credenciais do lab |
+| `auth.token_path` | Caminho em notação de ponto até o token no JSON de resposta |
 
 ### Variáveis de ambiente
 

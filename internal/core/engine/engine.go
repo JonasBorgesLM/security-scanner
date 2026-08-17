@@ -24,7 +24,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"golang.org/x/time/rate"
 
@@ -194,7 +193,6 @@ func (e *Engine) collectOne(ctx context.Context, ep model.Endpoint) model.Target
 	}
 	probedURL := req.URL.String()
 
-	start := time.Now()
 	resp, err := e.client.Do(req)
 	if err != nil {
 		target.BaselineErr = fmt.Errorf("engine: baseline %s %s: %w", method, ep.Path, err)
@@ -215,7 +213,6 @@ func (e *Engine) collectOne(ctx context.Context, ep model.Endpoint) model.Target
 		// holds, and so every check reads a map nothing else can touch.
 		Headers:      resp.Header.Clone(),
 		Body:         body,
-		Duration:     time.Since(start),
 		ProbedMethod: method,
 	}
 	return target
@@ -420,11 +417,13 @@ func runPool[T, R any](ctx context.Context, workers int, items []T, fn func(cont
 
 	var wg sync.WaitGroup
 	for range workers {
-		wg.Go(func() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 			for it := range ch {
 				results[it.i], completed[it.i] = guard(ctx, it.item, fn)
 			}
-		})
+		}()
 	}
 
 feed:
@@ -455,9 +454,9 @@ feed:
 
 // guard runs fn and turns a panic into a dropped item rather than a dead
 // process. A single misbehaving check — or a bug in collection — must not
-// discard the work of a scan that may have been running for minutes.
-// WaitGroup.Go also requires that its function not panic, so this is what
-// makes the pool's use of it legitimate.
+// discard the work of a scan that may have been running for minutes. A
+// panic in a bare pool goroutine would otherwise take the whole process
+// down, so recovering here is what makes the pool safe.
 //
 // The item is reported as not-completed, which is exactly how an
 // undispatched item is treated: it simply does not appear in the results,

@@ -53,8 +53,8 @@ func TestExpand_MissingVariablesAreReportedTogether(t *testing.T) {
 		t.Fatal("Expand() error = nil, want an error naming the unset variables")
 	}
 
-	missing, ok := errors.AsType[*MissingVarsError](err)
-	if !ok {
+	var missing *MissingVarsError
+	if !errors.As(err, &missing) {
 		t.Fatalf("Expand() error = %v, want a *MissingVarsError", err)
 	}
 
@@ -72,8 +72,8 @@ func TestExpand_MissingVariablesAreReportedTogether(t *testing.T) {
 func TestExpand_MissingVariableListedOnlyOnce(t *testing.T) {
 	_, err := Expand("${ENVEXPAND_TEST_REPEATED} and again ${ENVEXPAND_TEST_REPEATED}")
 
-	missing, ok := errors.AsType[*MissingVarsError](err)
-	if !ok {
+	var missing *MissingVarsError
+	if !errors.As(err, &missing) {
 		t.Fatalf("Expand() error = %v, want a *MissingVarsError", err)
 	}
 	if len(missing.Names) != 1 {

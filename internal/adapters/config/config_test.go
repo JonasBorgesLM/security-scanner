@@ -77,17 +77,50 @@ func TestLoad_MissingRequiredFieldsReportsAllOfThem(t *testing.T) {
 		t.Fatal("Load() error = nil, want an error listing every missing field")
 	}
 
+	// The auth block in this fixture is entirely empty, which is valid now
+	// (a public target needs no credentials) — auth's optional/all-or-nothing
+	// rule is covered by TestLoad_AuthOptional_* below. What this test proves
+	// is that every OTHER missing required field is reported in one pass.
 	wantSubstrings := []string{
 		"target.base_url is required",
 		"scope.allowed_hosts is required",
-		"auth.login_endpoint is required",
-		"auth.token_path is required",
-		"auth.credentials.username is required",
-		"auth.credentials.password is required",
 		"engine.max_concurrency must be greater than 0",
 		"engine.requests_per_second must be greater than 0",
 		"engine.timeout is required",
 		"checks.enabled is required",
+	}
+	for _, want := range wantSubstrings {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err.Error(), want)
+		}
+	}
+	// An all-empty auth block must not produce auth errors any more.
+	if strings.Contains(err.Error(), "auth.") {
+		t.Errorf("error %q reports an auth problem, but an empty auth block is valid", err.Error())
+	}
+}
+
+func TestLoad_AuthOptionalWhenAbsent(t *testing.T) {
+	cfg, err := Load("testdata/no-auth.yaml")
+	if err != nil {
+		t.Fatalf("Load() error = %v, want a config with no auth block to be valid", err)
+	}
+	if cfg.Auth.Configured() {
+		t.Errorf("Auth.Configured() = true, want false for a config with no auth block")
+	}
+}
+
+func TestLoad_PartialAuthReportsMissingFields(t *testing.T) {
+	_, err := Load("testdata/partial-auth.yaml")
+	if err == nil {
+		t.Fatal("Load() error = nil, want a half-filled auth block to be rejected")
+	}
+	// login_endpoint is set in the fixture, so the block counts as present
+	// and the rest of the required set must be reported.
+	wantSubstrings := []string{
+		"auth.token_path is required when any auth field is set",
+		"auth.credentials.username is required when any auth field is set",
+		"auth.credentials.password is required when any auth field is set",
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(err.Error(), want) {

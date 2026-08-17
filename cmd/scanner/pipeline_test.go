@@ -762,3 +762,149 @@ func TestReport_DefaultsJSONPathFromOutPath(t *testing.T) {
 		t.Errorf("expected %s to exist (derived from --out), got: %v", wantJSONPath, err)
 	}
 }
+
+// If --out already ends in .json, the derived JSON path collides with the
+// HTML one; report must refuse rather than silently writing one over the
+// other.
+func TestReport_RejectsCollidingOutputPaths(t *testing.T) {
+	dir := t.TempDir()
+	confirmedPath := filepath.Join(dir, "confirmed.json")
+	data, err := json.Marshal(model.FindingsFile{SchemaVersion: model.SchemaVersion, Findings: []model.Finding{}})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(confirmedPath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	outPath := filepath.Join(dir, "report.json") // derived JSON path is identical
+	err = runReport([]string{"--in", confirmedPath, "--out", outPath})
+	if err == nil {
+		t.Fatal("runReport() error = nil, want a collision error when --out and the JSON output resolve to the same file")
+	}
+	if !strings.Contains(err.Error(), "same file") {
+		t.Errorf("error = %q, want it to explain the path collision", err.Error())
+	}
+	// The collision is caught before anything is rendered, so the output
+	// path must not have been created at all.
+	if _, statErr := os.Stat(outPath); statErr == nil {
+		t.Error("output path was written despite the collision error")
+	}
+}
+
+// writeNoAuthConfig writes a valid config with no auth block at all — the
+// public-target case M1 makes possible.
+func writeNoAuthConfig(t *testing.T, dir, baseURL string) string {
+	t.Helper()
+	host := strings.TrimPrefix(baseURL, "http://")
+	path := filepath.Join(dir, "config.yaml")
+	cfg := fmt.Sprintf(`schema_version: 1
+target:
+  base_url: %s
+scope:
+  allowed_hosts: ["%s"]
+engine:
+  max_concurrency: 4
+  requests_per_second: 500
+  timeout: 30s
+checks:
+  enabled: [missing-headers]
+`, baseURL, host)
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
+}
+
+// A spec with protected routes against a config that carries no auth block
+// must fail with a clear message before any request goes out — not scan the
+// protected routes unauthenticated and report them as skipped.
+func TestScan_RequiresAuthButNoAuthConfigured(t *testing.T) {
+	dir := t.TempDir()
+	specPath := writeSpec(t, dir) // /items, /secure, POST /items all require auth
+	configPath := writeNoAuthConfig(t, dir, "http://127.0.0.1:9")
+	outPath := filepath.Join(dir, "findings.json")
+
+	err := runScan([]string{"--spec", specPath, "--config", configPath, "--out", outPath})
+	if err == nil {
+		t.Fatal("runScan() error = nil, want an error when the spec needs auth but none is configured")
+	}
+	if !strings.Contains(err.Error(), "require authentication") {
+		t.Errorf("error = %q, want it to explain the spec needs auth", err.Error())
+	}
+	if _, statErr := os.Stat(outPath); statErr == nil {
+		t.Error("findings.json was written despite the auth configuration error")
+	}
+}
+
+// The mirror of the above for a public spec: no auth block, and the scan
+// runs to completion without ever logging in.
+func TestScan_PublicSpecScansWithNoAuthBlock(t *testing.T) {
+	srv, lab := newLabServer(t)
+	dir := t.TempDir()
+
+	specPath := filepath.Join(dir, "openapi.yaml")
+	spec := `openapi: 3.0.3
+info: {title: Public, version: "1.0"}
+paths:
+  /health:
+    get:
+      responses: {"200": {description: OK}}
+  /status:
+    get:
+      responses: {"200": {description: OK}}
+`
+	if err := os.WriteFile(specPath, []byte(spec), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	configPath := writeNoAuthConfig(t, dir, srv.URL)
+	outPath := filepath.Join(dir, "findings.json")
+
+	if err := runScan([]string{"--spec", specPath, "--config", configPath, "--out", outPath}); err != nil {
+		t.Fatalf("runScan() error = %v, want a public spec to scan with no auth block", err)
+	}
+	if got := lab.logins.Load(); got != 0 {
+		t.Errorf("logins = %d, want 0 — a public target must never trigger a login", got)
+	}
+
+	var out model.FindingsFile
+	mustReadJSON(t, outPath, &out)
+	if len(out.Findings) == 0 {
+		t.Error("no findings — missing-headers should have fired on the bare public routes")
+	}
+}
+
+// The attack stage enforces the same rule independently: a finding on a
+// protected route with no auth block configured is an error, not a silent
+// unauthenticated replay.
+func TestAttack_RequiresAuthButNoAuthConfigured(t *testing.T) {
+	dir := t.TempDir()
+	configPath := writeNoAuthConfig(t, dir, "http://127.0.0.1:9")
+
+	inPath := filepath.Join(dir, "findings.json")
+	in := model.FindingsFile{
+		SchemaVersion: model.SchemaVersion,
+		Findings: []model.Finding{{
+			ID:        "sqli-boolean:GET:/items:q",
+			CheckName: "sqli-boolean",
+			Endpoint:  model.Endpoint{Method: "GET", Path: "/items", RequiresAuth: true},
+			Request:   model.CapturedRequest{Method: "GET", URL: "http://127.0.0.1:9/items?q=x", InjectedParam: "q", Payload: "x"},
+		}},
+	}
+	data, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(inPath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	outPath := filepath.Join(dir, "confirmed.json")
+	err = runAttack([]string{"--in", inPath, "--config", configPath, "--out", outPath})
+	if err == nil {
+		t.Fatal("runAttack() error = nil, want an error when a finding needs auth but none is configured")
+	}
+	if !strings.Contains(err.Error(), "require authentication") {
+		t.Errorf("error = %q, want it to explain the finding needs auth", err.Error())
+	}
+}

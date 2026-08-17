@@ -121,17 +121,20 @@ func runScan(args []string) error {
 		return err
 	}
 
-	authenticator, err := auth.New(cfg.Target.BaseURL, authConfig(cfg), client)
-	if err != nil {
-		return err
-	}
-
-	// Only put the Authenticator in the path when the spec actually declares
-	// protected routes. It logs in lazily on its first request, so wrapping
-	// an unauthenticated API in it would force a pointless — and failing —
+	// Only build and use the Authenticator when the spec actually declares
+	// protected routes. A fully public target needs no auth block at all, so
+	// wiring one in unconditionally would force a pointless — and failing —
 	// login before any scanning could start.
 	scanClient := ports.HTTPClient(client)
 	if countRequiringAuth(endpoints) > 0 {
+		if !cfg.Auth.Configured() {
+			return fmt.Errorf("scan: %d endpoint(s) require authentication but config.yaml has no auth block; add one or scan a spec with no protected routes",
+				countRequiringAuth(endpoints))
+		}
+		authenticator, err := auth.New(cfg.Target.BaseURL, authConfig(cfg), client)
+		if err != nil {
+			return err
+		}
 		// Log in eagerly so bad credentials fail here, with a clear message,
 		// rather than surfacing as a wave of skipped routes later.
 		if err := authenticator.Authenticate(ctx); err != nil {
@@ -253,13 +256,19 @@ func runAttack(args []string) error {
 	guard := scope.NewScopeGuard(cfg.Scope.AllowedHosts)
 	client := httpclient.New(guard, nil)
 
-	authenticator, err := auth.New(cfg.Target.BaseURL, authConfig(cfg), client)
-	if err != nil {
-		return err
-	}
-
+	// Only wire in auth when a finding sits on a protected route — same
+	// optional-auth rule as scan. A findings.json full of public routes needs
+	// no credentials to reproduce.
 	attackClient := ports.HTTPClient(client)
 	if countFindingsRequiringAuth(in.Findings) > 0 {
+		if !cfg.Auth.Configured() {
+			return fmt.Errorf("attack: %d finding(s) are on endpoints that require authentication but config.yaml has no auth block; add one to reproduce them",
+				countFindingsRequiringAuth(in.Findings))
+		}
+		authenticator, err := auth.New(cfg.Target.BaseURL, authConfig(cfg), client)
+		if err != nil {
+			return err
+		}
 		if err := authenticator.Authenticate(ctx); err != nil {
 			return err
 		}
@@ -393,6 +402,19 @@ func runReport(args []string) error {
 		return err
 	}
 
+	jsonOut := *jsonPath
+	if jsonOut == "" {
+		jsonOut = strings.TrimSuffix(*outPath, filepath.Ext(*outPath)) + ".json"
+	}
+	// Resolve both to the same form before comparing: otherwise one would
+	// silently overwrite the other (e.g. --out report.json makes the derived
+	// JSON path collide with the HTML one), leaving a single file that is
+	// neither what was asked for.
+	if samePath(*outPath, jsonOut) {
+		return fmt.Errorf("report: --out (%s) and the JSON output (%s) resolve to the same file; pass a distinct --json path",
+			*outPath, jsonOut)
+	}
+
 	data := report.Build(in.Findings)
 
 	var html bytes.Buffer
@@ -403,10 +425,6 @@ func runReport(args []string) error {
 		return err
 	}
 
-	jsonOut := *jsonPath
-	if jsonOut == "" {
-		jsonOut = strings.TrimSuffix(*outPath, filepath.Ext(*outPath)) + ".json"
-	}
 	var js bytes.Buffer
 	if err := data.WriteJSON(&js); err != nil {
 		return fmt.Errorf("report: render %s: %w", jsonOut, err)
@@ -489,6 +507,20 @@ func writeJSON(path string, v any) error {
 		return fmt.Errorf("encode %s: %w", path, err)
 	}
 	return writeFile(path, append(data, '\n'))
+}
+
+// samePath reports whether a and b name the same file. It compares absolute,
+// cleaned forms so "report.json" and "./report.json" are recognised as one;
+// it does not resolve symlinks, which is more than this collision guard
+// needs. If either path cannot be made absolute, it falls back to comparing
+// cleaned relative forms rather than claiming they differ.
+func samePath(a, b string) bool {
+	absA, errA := filepath.Abs(a)
+	absB, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return absA == absB
 }
 
 // writeFile writes data to a temporary file in the destination directory
