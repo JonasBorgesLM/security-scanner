@@ -1,0 +1,17 @@
+# lab-api: a deliberately vulnerable HTTP API for exercising the scanner
+# end to end. Never deploy this image anywhere but the docker-compose lab
+# in this repository.
+
+FROM golang:1.23-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY main.go ./
+RUN CGO_ENABLED=0 go build -o /lab-api .
+
+FROM alpine:3.20
+RUN adduser -D -u 10001 labapi
+COPY --from=build /lab-api /lab-api
+USER labapi
+EXPOSE 8080
+ENTRYPOINT ["/lab-api"]

@@ -19,7 +19,9 @@ A ferramenta impõe essa restrição tecnicamente, não só por convenção:
 
 - **`scope.allowed_hosts`** no `config.yaml` é uma allowlist obrigatória. Todo request
   passa pelo `ScopeGuard` dentro do único cliente HTTP do projeto; um host fora da
-  lista é rejeitado **antes de a conexão ser aberta**.
+  lista é rejeitado **antes de a conexão ser aberta** — inclusive a cada salto de um
+  redirecionamento HTTP, não só na requisição inicial (um alvo malicioso ou mal
+  configurado não consegue usar um `3xx` pra desviar o scanner pra outro host).
 - O scanner **se recusa a iniciar** se o host do `target.base_url` não estiver na
   allowlist — configuração incoerente falha cedo, com mensagem explícita.
 - **Não-destrutivo por padrão:** endpoints `DELETE`/`PUT`/`PATCH` são pulados a menos
@@ -223,6 +225,71 @@ Ordem de implementação dos checks: headers ausentes (passivo) → secrets expo
 
 ---
 
+## Lab
+
+`lab/` é uma API em Go **propositalmente vulnerável**, atrás de um Postgres real,
+só para dar ao scanner um alvo próprio pra rodar o ciclo completo contra —
+nada aqui deve rodar em outro lugar além da sua máquina. É um módulo Go
+separado (`lab/go.mod`); `go build ./...` na raiz do repo não o toca.
+
+| Vulnerabilidade | Onde | Como |
+|---|---|---|
+| SQLi boolean-based | `GET /items?q=` | `q` é concatenado sem sanitização num `WHERE name = '<q>'`. Detectado por `sqli-boolean`; `attack` reproduz e ainda extrai o nome do banco via `UNION SELECT` de verdade contra o Postgres. |
+| Secrets expostos | `GET /debug` | Uma chave no formato AWS (o exemplo público da própria AWS, não é credencial real) e um `api_key` genérico. Detectado por `exposed-secrets`. |
+| Headers ausentes | toda resposta | Nenhuma rota seta `CSP`/`HSTS`/`X-Frame-Options`/`X-Content-Type-Options`. Detectado por `missing-headers`. |
+| XSS refletido | `GET /search?term=` | `term` volta sem escape num `<html>`. **`scanner scan` ainda não detecta isso** — não existe check ativo `xss-reflected` implementado ainda (§7 do doc de projeto). O confirmer de `attack` já existe pra quando esse check chegar; dá pra exercitar essa rota manualmente com `curl` enquanto isso. |
+
+`GET /items/{id}` é deliberadamente **seguro** (parâmetro vinculado, não
+concatenado) — um controle pra notar se o scanner desse falso positivo nele.
+`PUT`/`DELETE /items/{id}` existem só pra exercitar o gate de destrutivo
+(ficam pulados por padrão, já que `configs/config.yaml` traz
+`engine.test_destructive: false`).
+
+### Subindo o lab
+
+```bash
+docker compose up -d --build
+```
+
+Isso sobe dois serviços: `db` (Postgres, com schema e seed em `lab/db/init.sql`)
+e `lab-api` (porta `8080` no host, só sobe depois que `db` fica saudável). A
+senha do usuário `admin` do lab já vem com um valor padrão
+(`lab-pass-only-123`) que bate com o comentário de `configs/config.yaml` —
+pra usar outra, exporte `LAB_PASSWORD` **antes** de subir o compose (ela é
+lida como variável de ambiente do `docker compose`, não do scanner).
+
+```bash
+curl http://localhost:8080/health   # {"ok":true}
+```
+
+### Rodando o ciclo completo contra ele
+
+`configs/config.yaml` já aponta pro lab (`localhost:8080`) sem precisar editar
+nada — só exportar a mesma senha:
+
+```bash
+export LAB_PASSWORD='lab-pass-only-123'
+
+scanner scan   --spec lab/openapi.yaml --config configs/config.yaml --out findings.json
+scanner attack --in findings.json      --config configs/config.yaml --out confirmed.json
+scanner report --in confirmed.json     --out report.html
+```
+
+O `scan` deve achar `sqli-boolean` em `/items`, `exposed-secrets` (2x) em
+`/debug` e `missing-headers` em todas as rotas passíveis de baseline. O
+`attack` deve confirmar a suspeita de SQLi e, contra o Postgres real, extrair
+o nome do banco (`labapi`) via `UNION SELECT` — dá pra conferir em
+`confirmed.json` sem precisar confiar só no texto deste README. Abra
+`report.html` num navegador pra ver o resultado consolidado.
+
+### Derrubando o lab
+
+```bash
+docker compose down -v   # -v também remove o volume do Postgres
+```
+
+---
+
 ## Arquitetura
 
 Hexagonal leve (ports/adapters), para que os checks sejam testáveis contra um
@@ -249,12 +316,14 @@ internal/
     patterns/         regexes de detecção (secrets), via go:embed
     payloads/         payloads de ataque (sqli), via go:embed
   attack/             confirmers de PoC pro estágio attack, mesmo padrão init()
-    registry.go       Register + dispatch por CheckName
+    attack.go         Register + dispatch por CheckName
     sqli.go           sqli-boolean: re-verificação + extração via UNION
     xss.go            xss-reflected: reflexão de marcador fresco
   envexpand/          expansão de ${VAR} compartilhada
-  report/             templates HTML + writer JSON
+  report/             template HTML (go:embed) + writer JSON
 configs/              config.yaml de exemplo
+lab/                  API vulnerável de estudo (módulo Go separado) + spec + init.sql
+docker-compose.yml    sobe lab/ atrás de um Postgres real — ver §Lab acima
 ```
 
 Detalhes de projeto e justificativas em [`doc/security-scanner-projeto.md`](doc/security-scanner-projeto.md).
