@@ -18,12 +18,12 @@ Ferramenta de estudo em Go para descobrir vulnerabilidades, confirmar via ataque
 ```
 scanner scan   --spec openapi.yaml --config config.yaml --out findings.json
 scanner attack --in findings.json  --config config.yaml --out confirmed.json
-scanner report --in confirmed.json --out report.html
+scanner report --in confirmed.json --out report.html [--json report.json]
 ```
 
-- **scan** — importa rotas do OpenAPI, autentica, roda checks (passivos + suspeitas ativas), grava `findings.json` (`Confirmed: false`).
-- **attack** — reproduz cada suspeita com prova de conceito não-destrutiva, grava `confirmed.json`.
-- **report** — consolida em HTML + JSON, com resumo executivo por severidade.
+- **scan** — importa rotas do OpenAPI, autentica, roda checks (passivos + suspeitas ativas), grava `findings.json` (`Confirmed: false`). **Feito.**
+- **attack** — reproduz cada suspeita com prova de conceito não-destrutiva, grava `confirmed.json`. **Feito** — `internal/attack`, §7 abaixo.
+- **report** — lê `confirmed.json`, consolida em HTML (`html/template`) + JSON, com resumo executivo por severidade. **Feito** — `internal/report`. Não toca a rede: só lê o arquivo de entrada e renderiza.
 
 Arquivos intermediários são o contrato entre estágios: versionáveis no git, revisáveis manualmente antes do `attack`, executáveis em máquinas diferentes.
 
@@ -55,6 +55,10 @@ security-scanner/
 │   │   ├── sqli.go                # ativo
 │   │   ├── payloads/sqli.txt      # payloads de ataque, go:embed
 │   │   └── xss.go                 # ativo
+│   ├── attack/                    # confirmers de PoC p/ o estágio attack, mesmo padrão init()
+│   │   ├── attack.go              # Confirmer, Register, Run
+│   │   ├── sqli.go                # sqli-boolean: re-verifica + extrai via UNION
+│   │   └── xss.go                 # xss-reflected: reflexão de marcador fresco
 │   ├── envexpand/                 # expansão de ${VAR} compartilhada
 │   └── report/                    # templates HTML + writer JSON
 ├── configs/
@@ -362,6 +366,55 @@ que não lê o corpo de `Target.Baseline`.
 - **`CapturedRequest` completo**: `Method`, `URL` (já com o payload
   verdadeiro codificado, pronta pra reproduzir com `curl` ou pelo estágio
   `attack`), `InjectedParam`, `Payload`.
+
+---
+
+### Contrato do `attack`
+
+Implementado em `internal/attack` — lê `findings.json`, tenta confirmar cada
+`Finding` não confirmado, grava `confirmed.json`. É um processo **separado** do
+`scan`: não herda sessão, não herda estado, autentica de novo do zero contra o
+mesmo `config.yaml`.
+
+- **Registry por `CheckName`**, mesmo padrão `init()` + `RegisterCheck` de
+  `internal/checks`: cada check com PoC implementa `attack.Confirmer` (método
+  `CheckName() string` + `Confirm(ctx, Finding, HTTPClient) (Finding, error)`) e
+  se registra via `attack.Register`. `attack.Run` despacha cada finding pelo
+  nome; sem confirmer registrado pra aquele `CheckName`, o finding passa
+  **inalterado** pro `confirmed.json`, listado como `skipped` — nunca promovido a
+  `Confirmed: true` sem verificação de verdade. `missing-headers` e
+  `exposed-secrets` caem nesse caso hoje: são observação direta de uma única
+  resposta já coletada, não têm o que "reproduzir".
+- **Gate `Destructive` reaplicado**, independente do que o `scan` já decidiu —
+  `attack` é invocação de processo separada, não pode assumir que aquela decisão
+  ainda vale.
+- **`sqli-boolean`**: dois passos.
+  1. Re-verifica o MESMO comparativo verdadeiro/falso do check, medindo ruído de
+     novo agora (não confia no que o `scan` mediu antes — o alvo pode ter mudado).
+     Só essa reprodução já é o suficiente pra `Confirmed: true`.
+  2. Só então, tenta extrair **o nome do banco via `UNION SELECT`** — leitura
+     pura, nunca escrita. Descobre a contagem de colunas testando 1 até
+     `sqliMaxColumns` (6), envolvendo uma constante em `CONCAT('ATTACKPOC_','OK','_ENDPOC')`
+     na última coluna — achar o marcador na resposta prova contagem certa,
+     `CONCAT` funciona nesse motor, e a última coluna aparece na resposta, tudo
+     num request só. Encontrada a contagem, tenta candidatos
+     (`database()`, `current_database()`, `DB_NAME()`, `sqlite_version()`) na
+     mesma posição. **Best-effort**: se a extração falhar (motor desconhecido),
+     o finding continua confirmado pela reprodução booleana — só a nota de
+     evidência muda pra dizer que a extração não funcionou.
+  3. `FalsePayloadFor` (exportada de `internal/checks/sqli.go`) reconstrói o
+     payload falso pareado ao verdadeiro do `Finding`, reusando o MESMO
+     `payloads/sqli.txt` — uma fonte de verdade só, sem duplicar o parser.
+- **`xss-reflected`**: reenvia com um marcador **novo, gerado agora**
+  (`crypto/rand`, não o payload original do scan) — evita cache e distingue
+  "refletiu sem escape" (confirmado) de "refletiu mas escapado" (não
+  confirmado, mas dito explicitamente — não é o mesmo que "não refletiu").
+- **`withInjectedValue`** reescreve a URL capturada trocando só o valor do
+  parâmetro injetado, sem precisar saber a lista de parâmetros do endpoint —
+  funciona pra query (via `net/url`) e pra path (substring na forma
+  *decodificada* de `u.Path`; comparar contra a forma escapada foi um bug real
+  encontrado pelos próprios testes deste pacote — `url.URL` guarda o path
+  decodificado e só usa `RawPath` quando ele bate com o `Path` atual).
 - **Sonda com o método real do endpoint, não força GET.** Segue o princípio
   já declarado em §1 ("só testa métodos seguros: GET, POST de teste") —
   DELETE/PUT/PATCH nunca chegam neste check (o gate não-destrutivo do engine
@@ -374,6 +427,45 @@ que não lê o corpo de `Target.Baseline`.
   responderia 404 em toda sonda e o check "limparia" uma rota que nunca
   chegou a exercitar de verdade — um jeito de falhar pior do que umas linhas
   extra no banco do próprio lab do operador.
+
+---
+
+### Contrato do `report`
+
+Implementado em `internal/report` — lê `confirmed.json` e grava `report.html` +
+`report.json`. É o único estágio que não toca a rede: nada aqui constrói ou
+envia um request, então não precisa de `ScopeGuard`, cliente HTTP nem
+autenticação.
+
+- **`html/template`, nunca `text/template`.** `Evidence` e `Request` carregam
+  texto potencialmente influenciado por quem foi atacado — payload de SQLi,
+  marcador de XSS refletido, trecho cru de resposta. `html/template`
+  escapa por contexto automaticamente; renderizar isso com `text/template`
+  tornaria o próprio relatório um sink de XSS ao abrir no navegador.
+  `TestWriteHTML_EscapesAttackerControlledContent` prova isso injetando um
+  `<script>` real num finding de exemplo e checando que ele sai como
+  `&lt;script&gt;`, nunca como tag executável.
+- **Template embutido via `go:embed`** (`internal/report/template.html`),
+  mesmo padrão de `patterns/secrets.txt` e `payloads/sqli.txt`: fica ao lado
+  do pacote que o usa, parseado uma vez em `init()` — template malformado é
+  erro de build, não condição de runtime.
+- **Ordenação determinística**: `Build` ordena por severidade (crítico → alto
+  → médio → baixo → desconhecido), depois confirmado antes de não-confirmado,
+  depois por `CheckName`, `Endpoint.Path` e `ID` como desempate — nunca pela
+  ordem de descoberta do `scan`. Isso vale tanto pro HTML quanto pro
+  `report.json`, então os dois arquivos mostram os achados na mesma ordem e
+  `report.json` fica byte-idêntico entre duas execuções sobre o mesmo
+  `confirmed.json`, mantendo o invariante de determinismo do pipeline.
+- **Resumo executivo** conta achados por severidade e, dentro de cada
+  severidade, quantos já foram confirmados por PoC — a distinção importa: um
+  `high` confirmado pesa muito mais que um `high` ainda só suspeito.
+- **Recomendação de correção vive só no pacote `report`** (mapa
+  `CheckName` → texto), não em `model.Finding`: é conteúdo de apresentação,
+  não faz parte do schema JSON versionado que `scan` e `attack` populam.
+  Check sem entrada no mapa recebe um texto genérico de fallback em vez de
+  ficar em branco.
+- **`--json` é opcional**: por padrão deriva de `--out` trocando a extensão
+  (`report.html` → `report.json`), mas aceita um caminho explícito.
 
 ---
 

@@ -93,14 +93,16 @@ Cada arquivo intermediário é o contrato entre estágios: versionável no git, 
 ```bash
 scanner scan   --spec openapi.yaml --config config.yaml --out findings.json
 scanner attack --in findings.json  --config config.yaml --out confirmed.json
-scanner report --in confirmed.json --out report.html
+scanner report --in confirmed.json --out report.html [--json report.json]
 ```
 
 - **`scan`** — importa as rotas do OpenAPI, autentica no alvo, roda os checks e grava
   `findings.json` (suspeitas, `confirmed: false`).
 - **`attack`** — reproduz cada suspeita com uma prova de conceito não-destrutiva e
   grava `confirmed.json`.
-- **`report`** — consolida em HTML + resumo por severidade.
+- **`report`** — lê `confirmed.json` e grava `report.html` + `report.json`: resumo
+  executivo por severidade no topo, e por achado o check, endpoint, categoria OWASP,
+  severidade, evidência (request e response) e uma recomendação de correção.
 
 ### Estado atual
 
@@ -109,8 +111,8 @@ O projeto está em construção. Hoje:
 | Estágio | Estado |
 |---|---|
 | `scan` | **Funcional.** Importa o spec, autentica, coleta uma baseline por endpoint, roda os checks habilitados e grava `findings.json`. |
-| `attack` | Não implementado (sai com erro e código 1) |
-| `report` | Não implementado (sai com erro e código 1) |
+| `attack` | **Funcional.** Lê `findings.json`, reproduz cada suspeita não confirmada com uma PoC não-destrutiva e grava `confirmed.json`. |
+| `report` | **Funcional.** Lê `confirmed.json` e grava `report.html` (via `html/template`) + `report.json`. Não toca a rede. |
 
 Checks implementados:
 
@@ -142,6 +144,60 @@ versionado mudou o vazamento de lugar em vez de encontrá-lo.
 
 Um nome desconhecido em `checks.enabled` aborta a execução antes de qualquer
 request — um typo não desabilita um check em silêncio.
+
+O `report` usa `html/template` (não `text/template`) de propósito: `Evidence` e
+`Request` carregam conteúdo potencialmente controlado por quem foi atacado —
+payload de SQLi, marcador de XSS refletido, trecho cru de resposta — e isso
+precisa sair como texto inerte na página, nunca como HTML executável. Achados
+são ordenados por severidade e depois por confirmado-antes-de-não-confirmado,
+não pela ordem em que o scan os encontrou, para que o leitor veja primeiro o
+que mais importa. `report.json` carrega o mesmo resumo e a mesma ordem, então
+os dois arquivos são a mesma informação em dois formatos, não dois relatórios
+diferentes. O texto de recomendação por check vive só no pacote `report`
+(não em `model.Finding`): é conteúdo de apresentação, não parte do contrato
+JSON versionado das outras duas etapas.
+
+### `attack`: prova de conceito não-destrutiva
+
+`attack` é uma execução separada do binário — não compartilha nada com o `scan`
+além dos arquivos, autentica de novo do zero — que lê cada `Finding` de
+`findings.json` e tenta confirmá-lo com uma técnica específica do check que o
+gerou, via um pequeno registry (`internal/attack`, mesmo padrão `init()` de
+`internal/checks`):
+
+| Check | Confirmação |
+|---|---|
+| `sqli-boolean` | Mede o ruído do endpoint de novo, agora, e só confirma se a diferença verdadeiro/falso ainda for maior que o ruído — o alvo pode ter mudado desde o `scan`. Confirmado isso, tenta extrair **só o nome do banco** via `UNION SELECT` (nunca escrita: sem `DROP`, sem `UPDATE`, só leitura), testando contagem de colunas e algumas funções comuns (`database()`, `current_database()`, `DB_NAME()`, `sqlite_version()`). A extração é *best-effort*: se não funcionar contra o motor do alvo, o finding continua confirmado pela reprodução booleana — só a nota de extração muda. |
+| `xss-reflected` | Reenvia com um marcador **novo e único** (não o payload original do scan, para não aproveitar uma resposta em cache) e confirma só se ele voltar sem escape HTML — reflexão escapada não é explorável e é reportada como tal, não como "não reproduziu". |
+
+Um `CheckName` sem confirmer registrado (`missing-headers`, `exposed-secrets` — são
+observações diretas de uma única resposta já coletada, não têm o que "reproduzir")
+passa por `confirmed.json` sem alteração, listado como `skipped`, nunca promovido
+a `Confirmed: true` sem verificação real.
+
+Endpoint `Destructive` é respeitado de novo aqui, independente do que o `scan` já
+fez — `attack` é um processo separado e não assume que a decisão de outro processo
+ainda vale.
+
+Exemplo:
+
+```console
+$ scanner attack --in findings.json --config configs/config.yaml
+target:     http://127.0.0.1:8099
+findings:   17 (0 destructive)
+
+wrote confirmed.json (1 confirmed, 16 skipped, 0 failed, 0 not confirmed)
+  skipped: missing-headers on GET /health: no PoC available for check "missing-headers"
+  ...
+```
+
+O finding de `sqli-boolean` confirmado carrega a URL exata que extraiu o dado —
+reproduzível com `curl` puro, sem o scanner:
+
+```console
+$ curl 'http://127.0.0.1:8099/items?q=%27+UNION+SELECT+CONCAT%28%27ATTACKPOC_%27%2Cdatabase%28%29%2C%27_ENDPOC%27%29--+-'
+{"items": [{"id": 1, "name": "ATTACKPOC_labdb_billing_ENDPOC"}]}
+```
 
 Exemplo de execução do `scan`:
 
@@ -192,6 +248,10 @@ internal/
     sqli.go           sqli-boolean (ativo)
     patterns/         regexes de detecção (secrets), via go:embed
     payloads/         payloads de ataque (sqli), via go:embed
+  attack/             confirmers de PoC pro estágio attack, mesmo padrão init()
+    registry.go       Register + dispatch por CheckName
+    sqli.go           sqli-boolean: re-verificação + extração via UNION
+    xss.go            xss-reflected: reflexão de marcador fresco
   envexpand/          expansão de ${VAR} compartilhada
   report/             templates HTML + writer JSON
 configs/              config.yaml de exemplo
@@ -216,11 +276,14 @@ alimentado por `testdata/`, e os testes de autenticação usam `httptest.Server`
 loopback. Há testes dedicados para o `ScopeGuard` (host fora da allowlist é
 bloqueado antes de virar conexão) e para o determinismo do parser.
 
-Há um teste de ponta a ponta (`cmd/scanner/pipeline_test.go`) que monta a pilha
+Há testes de ponta a ponta (`cmd/scanner/pipeline_test.go`) que montam a pilha
 inteira — ScopeGuard, autenticação, rate limiter, coleta e check real — contra um
-`httptest.Server`, e verifica entre outras coisas que a coleta nunca envia um método
+`httptest.Server`, e verificam entre outras coisas que a coleta nunca envia um método
 inseguro, que endpoint destrutivo não é tocado, e que dois scans do mesmo alvo
-produzem arquivos byte a byte idênticos.
+produzem arquivos byte a byte idênticos. Um deles roda o ciclo `scan` → `attack`
+completo contra um alvo com SQLi de verdade (simulado), incluindo a extração via
+`UNION` — duas execuções de processo separadas, duas autenticações separadas,
+como dois comandos `scanner` reais rodariam.
 
 O CI (`.github/workflows/ci.yml`) roda gofmt, vet, golangci-lint, testes, race e cobertura.
 

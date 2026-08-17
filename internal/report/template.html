@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Security Scan Report</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --surface: #ffffff;
+    --border: #dde1e7;
+    --text: #1a1e27;
+    --muted: #5b6472;
+    --crit: #8c1d13; --crit-bg: #fbe4e1;
+    --high: #a24a08; --high-bg: #fdeee0;
+    --med:  #7a5a06; --med-bg:  #fbf1dc;
+    --low:  #2a5db0; --low-bg:  #e8f0fc;
+    --unk:  #5b6472; --unk-bg:  #eef0f3;
+    --ok:   #2f7a4f; --ok-bg:   #e8f5ee;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+  }
+  .page {
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 2.5rem 1.5rem 5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+  }
+  header h1 { font-size: 1.75rem; margin: 0 0 .3rem; }
+  header p { color: var(--muted); margin: 0; }
+
+  .summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .stat { background: var(--surface); padding: 1rem; text-align: center; }
+  .stat .n { font-size: 1.6rem; font-weight: 700; }
+  .stat .l {
+    font-size: .72rem;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--muted);
+    margin-top: .15rem;
+  }
+
+  .findings { display: flex; flex-direction: column; gap: 1.1rem; }
+  .finding {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.2rem 1.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: .8rem;
+  }
+  .finding-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .5rem .6rem;
+  }
+  .finding-head .name { font-weight: 700; font-size: 1.02rem; }
+  .finding-head .route { color: var(--muted); }
+
+  .badge {
+    font-size: .68rem;
+    font-weight: 700;
+    letter-spacing: .03em;
+    padding: .2rem .55rem;
+    border-radius: 6px;
+    border: 1px solid;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+  .badge.sev-critical { color: var(--crit); background: var(--crit-bg); border-color: var(--crit); }
+  .badge.sev-high     { color: var(--high); background: var(--high-bg); border-color: var(--high); }
+  .badge.sev-medium   { color: var(--med);  background: var(--med-bg);  border-color: var(--med); }
+  .badge.sev-low      { color: var(--low);  background: var(--low-bg);  border-color: var(--low); }
+  .badge.sev-unknown  { color: var(--unk);  background: var(--unk-bg);  border-color: var(--unk); }
+  .badge.status-confirmed   { color: var(--ok);   background: var(--ok-bg);  border-color: var(--ok); }
+  .badge.status-unconfirmed { color: var(--muted); background: var(--unk-bg); border-color: var(--border); }
+
+  .mono {
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+    font-size: .85em;
+    word-break: break-word;
+  }
+
+  table.kv { width: 100%; border-collapse: collapse; font-size: .88rem; }
+  table.kv th {
+    text-align: left;
+    color: var(--muted);
+    font-weight: 600;
+    padding: .3rem .7rem .3rem 0;
+    white-space: nowrap;
+    vertical-align: top;
+    width: 1%;
+  }
+  table.kv td { padding: .3rem 0; word-break: break-word; }
+
+  .block-label {
+    font-size: .72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--muted);
+    margin: 0 0 .3rem;
+  }
+  pre {
+    background: #0d1117;
+    color: #e6edf3;
+    padding: .75rem 1rem;
+    border-radius: 8px;
+    overflow-x: auto;
+    font-size: .8rem;
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .recommendation {
+    background: var(--ok-bg);
+    border: 1px solid var(--ok);
+    border-radius: 8px;
+    padding: .7rem 1rem;
+    font-size: .88rem;
+  }
+  .recommendation strong { color: var(--ok); }
+
+  .empty {
+    background: var(--surface);
+    border: 1px dashed var(--border);
+    border-radius: 10px;
+    padding: 2rem;
+    text-align: center;
+    color: var(--muted);
+  }
+
+  footer { color: var(--muted); font-size: .8rem; border-top: 1px solid var(--border); padding-top: 1rem; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <h1>Security Scan Report</h1>
+    <p>{{.Summary.TotalFindings}} finding(s) &middot; {{.Summary.TotalConfirmed}} confirmed by proof-of-concept.</p>
+  </header>
+
+  <section class="summary">
+    {{range .Summary.BySeverity}}
+    <div class="stat">
+      <div class="n">{{.Total}}</div>
+      <div class="l">{{.Severity}} &middot; {{.Confirmed}} confirmed</div>
+    </div>
+    {{end}}
+  </section>
+
+  {{if not .Findings}}
+  <p class="empty">No findings.</p>
+  {{else}}
+  <section class="findings">
+    {{range .Findings}}
+    <article class="finding">
+      <div class="finding-head">
+        <span class="badge sev-{{.SeverityClass}}">{{.Severity}}</span>
+        {{if .Confirmed}}
+        <span class="badge status-confirmed">Confirmed</span>
+        {{else}}
+        <span class="badge status-unconfirmed">Unconfirmed</span>
+        {{end}}
+        <span class="name">{{.CheckName}}</span>
+        <span class="route mono">{{.Endpoint.Method}} {{.Endpoint.Path}}</span>
+      </div>
+
+      <table class="kv">
+        <tr><th>OWASP</th><td>{{.OWASPCategory}}</td></tr>
+        {{if .Request.InjectedParam}}<tr><th>Parameter</th><td class="mono">{{.Request.InjectedParam}}</td></tr>{{end}}
+        {{if .Request.Payload}}<tr><th>Payload</th><td class="mono">{{.Request.Payload}}</td></tr>{{end}}
+        {{if .Evidence.StatusCode}}<tr><th>Status</th><td>{{.Evidence.StatusCode}}</td></tr>{{end}}
+      </table>
+
+      {{if .Request.URL}}
+      <div>
+        <p class="block-label">Request</p>
+        <pre>{{.Request.Method}} {{.Request.URL}}{{if .Request.Body}}
+
+{{.Request.Body}}{{end}}</pre>
+      </div>
+      {{end}}
+
+      {{if or .Evidence.ResponseSnippet .Evidence.BaselineResponse}}
+      <div>
+        <p class="block-label">Evidence</p>
+        {{if .Evidence.ResponseSnippet}}<pre>{{.Evidence.ResponseSnippet}}</pre>{{end}}
+        {{if .Evidence.BaselineResponse}}
+        <p class="block-label" style="margin-top:.6rem">Baseline response</p>
+        <pre>{{.Evidence.BaselineResponse}}</pre>
+        {{end}}
+      </div>
+      {{end}}
+
+      <div class="recommendation"><strong>Recommendation:</strong> {{.Recommendation}}</div>
+    </article>
+    {{end}}
+  </section>
+  {{end}}
+
+  <footer>Generated by security-scanner &middot; schema_version {{.SchemaVersion}} &middot; only ever run against infrastructure you own or are authorised to test.</footer>
+
+</div>
+</body>
+</html>
