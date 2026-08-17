@@ -499,6 +499,18 @@ func newRateLimitedClient(inner ports.HTTPClient, requestsPerSecond float64, bur
 	}
 }
 
+// NewRateLimitedClient wraps inner with the same pacing New applies
+// internally, exported for pipeline stages that need "gentle by design"
+// without needing a full Engine — the attack command, which walks a
+// findings list sequentially rather than through a worker pool, is exactly
+// that case. Burst below 1 is treated as 1, matching New.
+func NewRateLimitedClient(inner ports.HTTPClient, requestsPerSecond float64, burst int) ports.HTTPClient {
+	if burst < 1 {
+		burst = 1
+	}
+	return newRateLimitedClient(inner, requestsPerSecond, burst)
+}
+
 // Do blocks until the rate limiter allows the request, then delegates. A
 // cancelled context aborts the wait instead of holding a worker hostage.
 func (c *rateLimitedClient) Do(req *http.Request) (*http.Response, error) {

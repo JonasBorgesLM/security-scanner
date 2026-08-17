@@ -17,8 +17,25 @@ import (
 //go:embed payloads/sqli.txt
 var sqliPayloadsFile string
 
+// sqliPairs is parsed once at package init rather than per call, since both
+// the check itself and FalsePayloadFor (used by the attack stage) need it.
+var sqliPairs = mustParsePayloadPairs(sqliPayloadsFile)
+
 func init() {
-	RegisterCheck(&sqliBoolean{pairs: mustParsePayloadPairs(sqliPayloadsFile)})
+	RegisterCheck(&sqliBoolean{pairs: sqliPairs})
+}
+
+// FalsePayloadFor returns the false-condition payload paired with a
+// true-condition one in payloads/sqli.txt, so a later pipeline stage (the
+// attack command) can reconstruct the same true/false comparison this check
+// made without re-parsing the payload file or duplicating the pairing.
+func FalsePayloadFor(truePayload string) (string, bool) {
+	for _, p := range sqliPairs {
+		if p.truePayload == truePayload {
+			return p.falsePayload, true
+		}
+	}
+	return "", false
 }
 
 // sqliNoiseSamples is how many times the check probes each parameter with a

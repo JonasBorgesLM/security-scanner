@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"net/http"
 	"testing"
 	"time"
 )
@@ -104,5 +105,37 @@ func TestRun_BurstAllowsAnInitialBatch(t *testing.T) {
 	}
 	if got := client.count(); got != jobs {
 		t.Errorf("client saw %d requests, want %d", got, jobs)
+	}
+}
+
+func TestNewRateLimitedClient_PacesRequests(t *testing.T) {
+	client := &fakeClient{}
+	rl := NewRateLimitedClient(client, 20, 1)
+
+	start := time.Now()
+	for range 3 {
+		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://lab.invalid/x", nil)
+		if _, err := rl.Do(req); err != nil {
+			t.Fatalf("Do() error = %v", err)
+		}
+	}
+	// 3 requests at 20/s with burst 1: at least ~2/20s of waiting.
+	if elapsed := time.Since(start); elapsed < 80*time.Millisecond {
+		t.Errorf("3 requests at 20 req/s took %v, want it paced", elapsed)
+	}
+	if got := client.count(); got != 3 {
+		t.Errorf("client saw %d requests, want 3", got)
+	}
+}
+
+func TestNewRateLimitedClient_DefaultsBurstToOne(t *testing.T) {
+	// Burst 0 must not panic or produce an unlimited limiter; it should
+	// behave the same as New's own default of 1.
+	client := &fakeClient{}
+	rl := NewRateLimitedClient(client, 1000, 0)
+
+	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://lab.invalid/x", nil)
+	if _, err := rl.Do(req); err != nil {
+		t.Fatalf("Do() error = %v", err)
 	}
 }
