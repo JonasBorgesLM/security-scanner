@@ -37,13 +37,13 @@ Arquivos intermediários são o contrato entre estágios: versionáveis no git, 
 security-scanner/
 ├── cmd/scanner/main.go            # CLI + composition root: scan | attack | report
 ├── internal/
-│   ├── ports/                     # interfaces: HTTPClient, Reporter, Store
+│   ├── ports/                     # interfaces: HTTPClient
 │   ├── adapters/
 │   │   ├── httpclient/            # cliente real + ScopeGuard middleware
 │   │   ├── openapi/               # parser de spec → []Endpoint
 │   │   └── config/                # leitura + validação do config.yaml
 │   ├── core/
-│   │   ├── model/                 # Endpoint, Finding, Evidence, Report
+│   │   ├── model/                 # Endpoint, Finding, Evidence, Target, Check
 │   │   ├── engine/                # worker pool + rate limiter + orquestração
 │   │   ├── auth/                  # login automático + re-auth em 401
 │   │   └── scope/                 # ScopeGuard
@@ -54,7 +54,8 @@ security-scanner/
 │   │   ├── patterns/secrets.txt   # regexes de detecção, go:embed
 │   │   ├── sqli.go                # ativo
 │   │   ├── payloads/sqli.txt      # payloads de ataque, go:embed
-│   │   └── xss.go                 # ativo
+│   │   ├── xss.go                 # ativo
+│   │   └── payloads/xss.txt       # templates de marcador, go:embed
 │   ├── attack/                    # confirmers de PoC p/ o estágio attack, mesmo padrão init()
 │   │   ├── attack.go              # Confirmer, Register, Run
 │   │   ├── sqli.go                # sqli-boolean: re-verifica + extrai via UNION
@@ -336,7 +337,7 @@ Implementado em `internal/core/auth`:
 | 1 | Headers ausentes | passivo | **Feito** — `internal/checks/headers.go`. Zero ambiguidade; valida o pipeline inteiro |
 | 2 | Secrets expostos | passivo | **Feito** — `internal/checks/secrets.go`. Só pattern matching; sem ataque |
 | 3 | SQLi boolean-based | ativo | **Feito** — `internal/checks/sqli.go`. 1º ataque real; exercita medição de ruído |
-| 4 | XSS refletido | ativo | Injeta marcador, verifica reflexão sem escape |
+| 4 | XSS refletido | ativo | **Feito** — `internal/checks/xss.go`. Injeta marcador, verifica reflexão sem escape |
 | (5) | IDOR | ativo | Requer relação usuário↔recurso (fase 2) |
 | (6) | JWT fraco (`alg:none`) | ativo | Validação de assinatura (fase 2) |
 
@@ -486,8 +487,8 @@ autenticação.
   `lab/` (módulo Go próprio) + Postgres real, subidos por `docker-compose.yml`
   na raiz do repo. Cobre as quatro classes deste projeto — SQLi boolean-based
   com extração via `UNION SELECT` de verdade, secrets expostos, headers
-  ausentes, e XSS refletido (este último sem check ativo ainda; existe pro
-  `attack`'s confirmer e pro dia em que `xss-reflected` for implementado).
+  ausentes, e XSS refletido (`scan` descobre via `internal/checks/xss.go`,
+  `attack` confirma com marcador próprio via `internal/attack/xss.go`).
   `GET /items/{id}` é parametrizado de propósito — um controle negativo pra
   notar um falso positivo. Não faz parte de `go test ./...`; é um alvo pra
   rodar o ciclo `scan → attack → report` manualmente. Ver README.md §Lab.

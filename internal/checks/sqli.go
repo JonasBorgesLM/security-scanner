@@ -5,7 +5,6 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -55,9 +54,6 @@ const sqliNoiseSamples = 3
 // deliberately inert: this check must never itself be the reason a route
 // misbehaves.
 const sqliProbeFiller = "1"
-
-// maxSQLiBodyBytes caps how much of any single probe response is read.
-const maxSQLiBodyBytes = 1 << 20 // 1 MiB
 
 // sqliSnippetLimit bounds how much response text lands in a Finding's
 // evidence, so findings.json stays reviewable rather than embedding whole
@@ -234,11 +230,11 @@ func (c *sqliBoolean) testParameter(
 	}
 
 	for _, pair := range c.pairs {
-		trueResp, err := c.probe(ctx, client, ep, origin, all, target, pair.truePayload)
+		trueResp, err := sendProbe(ctx, client, "sqli", ep, origin, all, target, pair.truePayload)
 		if err != nil {
 			continue // this pair is untestable; the next one might not be
 		}
-		falseResp, err := c.probe(ctx, client, ep, origin, all, target, pair.falsePayload)
+		falseResp, err := sendProbe(ctx, client, "sqli", ep, origin, all, target, pair.falsePayload)
 		if err != nil {
 			continue
 		}
@@ -294,7 +290,7 @@ func (c *sqliBoolean) measureNoise(
 	minLen, maxLen := -1, -1
 
 	for range sqliNoiseSamples {
-		res, err := c.probe(ctx, client, ep, origin, all, target, sqliProbeFiller)
+		res, err := sendProbe(ctx, client, "sqli", ep, origin, all, target, sqliProbeFiller)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -310,43 +306,12 @@ func (c *sqliBoolean) measureNoise(
 	return maxLen - minLen, lastSample, nil
 }
 
-// probeResult is one HTTP response boiled down to what this check compares.
+// probeResult is one HTTP response boiled down to what an active check
+// compares. Shared with xss-reflected; see sendProbe in probe.go.
 type probeResult struct {
 	url    string
 	status int
 	body   []byte
-}
-
-// probe sends one request with target's parameter set to value and every
-// other injectable parameter set to the same inert filler, so a parameter
-// this check is not currently testing can never be the reason a request
-// fails validation.
-func (c *sqliBoolean) probe(
-	ctx context.Context,
-	client ports.HTTPClient,
-	ep model.Endpoint,
-	origin *url.URL,
-	all []model.Parameter,
-	target model.Parameter,
-	value string,
-) (*probeResult, error) {
-	req, err := buildProbeRequest(ctx, ep, origin, all, target, value)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("checks: sqli: probing %s: %w", target.Name, err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSQLiBodyBytes))
-	if err != nil {
-		return nil, fmt.Errorf("checks: sqli: reading response for %s: %w", target.Name, err)
-	}
-
-	return &probeResult{url: req.URL.String(), status: resp.StatusCode, body: body}, nil
 }
 
 // buildProbeRequest fills every injectable parameter with the inert filler

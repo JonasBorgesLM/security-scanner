@@ -1,0 +1,29 @@
+# Reflected-XSS marker templates for the xss-reflected check, embedded at
+# build time so the list can grow without touching check logic.
+#
+# Unlike sqli.txt, a row here is not a complete payload: it is a prefix and
+# a suffix that bracket a short random value generated fresh for every
+# probe (crypto/rand, the same reasoning internal/attack's xssConfirmer
+# already uses for its own re-verification marker — a fixed string reused
+# probe to probe could be answered by a cached response instead of proving
+# anything, and a fresh one can only have come from this request). The
+# prefix/suffix characters are the actual test: '<' and '>' are what a
+# safe app must HTML-encode before echoing user input back.
+#
+# Format, one template per line:
+#
+#   <name> ||| <prefix> ||| <suffix>
+#
+# At scan time the check joins prefix + random + suffix into the literal
+# value it both sends and records — the exact same string goes into the
+# request (via url.Values.Set, or substituted into the path template,
+# before any URL-encoding) and into CapturedRequest.Payload. That equality
+# is load-bearing: internal/attack's xss-reflected confirmer reconstructs
+# the request later by finding Payload as a literal substring, and fails
+# outright if the two ever diverge (see withInjectedValue in
+# internal/attack/request.go). Neither half is itself executable on its
+# own, and no request this check sends does anything but read a response.
+#
+# Blank lines and lines starting with # are ignored.
+
+angle-bracket-tag ||| <xssscan- ||| >
