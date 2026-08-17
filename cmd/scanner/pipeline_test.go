@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/JonasBorgesLM/security-scanner/internal/adapters/config"
+	"github.com/JonasBorgesLM/security-scanner/internal/checks"
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
 )
 
@@ -325,5 +327,25 @@ func TestScan_OutOfScopeTargetIsRejected(t *testing.T) {
 	}
 	if got := lab.requests.Load(); got != 0 {
 		t.Errorf("lab received %d requests, want 0 — an out-of-scope target must never be contacted", got)
+	}
+}
+
+// The example config ships with the tool, so every check it enables must
+// actually be registered. Listing a check that does not exist yet makes the
+// operator's first copy-paste abort — which is exactly what this caught.
+func TestShippedConfigEnablesOnlyRegisteredChecks(t *testing.T) {
+	t.Setenv("LAB_PASSWORD", "example")
+
+	cfg, err := config.Load(filepath.Join("..", "..", "configs", "config.yaml"))
+	if err != nil {
+		t.Fatalf("config.Load() error = %v", err)
+	}
+
+	enabled, err := checks.Enabled(cfg.Checks.Enabled)
+	if err != nil {
+		t.Fatalf("configs/config.yaml enables a check that is not registered: %v", err)
+	}
+	if len(enabled) != len(cfg.Checks.Enabled) {
+		t.Errorf("resolved %d checks from %d names", len(enabled), len(cfg.Checks.Enabled))
 	}
 }

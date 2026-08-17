@@ -51,11 +51,12 @@ security-scanner/
 │   │   ├── registry.go
 │   │   ├── headers.go             # passivo
 │   │   ├── secrets.go             # passivo
+│   │   ├── patterns/secrets.txt   # regexes de detecção, go:embed
 │   │   ├── sqli.go                # ativo
+│   │   ├── payloads/sqli.txt      # payloads de ataque, go:embed
 │   │   └── xss.go                 # ativo
 │   ├── envexpand/                 # expansão de ${VAR} compartilhada
 │   └── report/                    # templates HTML + writer JSON
-├── payloads/                      # go:embed — sqli.txt, xss.txt
 ├── configs/
 │   └── config.yaml                # exemplo comentado (escopo incluso, sem scope.yaml)
 └── testdata/                      # specs e responses fake p/ testes
@@ -320,12 +321,59 @@ Implementado em `internal/core/auth`:
 
 | Ordem | Check | Kind | Por quê |
 |---|---|---|---|
-| 1 | Headers ausentes | passivo | Zero ambiguidade; valida o pipeline inteiro |
-| 2 | Secrets expostos | passivo | Só pattern matching; sem ataque |
-| 3 | SQLi boolean-based | ativo | 1º ataque real; exercita baseline |
+| 1 | Headers ausentes | passivo | **Feito** — `internal/checks/headers.go`. Zero ambiguidade; valida o pipeline inteiro |
+| 2 | Secrets expostos | passivo | **Feito** — `internal/checks/secrets.go`. Só pattern matching; sem ataque |
+| 3 | SQLi boolean-based | ativo | **Feito** — `internal/checks/sqli.go`. 1º ataque real; exercita medição de ruído |
 | 4 | XSS refletido | ativo | Injeta marcador, verifica reflexão sem escape |
 | (5) | IDOR | ativo | Requer relação usuário↔recurso (fase 2) |
 | (6) | JWT fraco (`alg:none`) | ativo | Validação de assinatura (fase 2) |
+
+---
+
+### Contrato do `sqli-boolean`
+
+Implementado em `internal/checks/sqli.go` — o primeiro check ativo, e o primeiro
+que não lê o corpo de `Target.Baseline`.
+
+- **Payloads em pares `verdadeiro`/`falso`**, embutidos de
+  `internal/checks/payloads/sqli.txt` via `go:embed` (formato
+  `nome ||| payload-verdadeiro ||| payload-falso`, um por linha). Arquivo
+  malformado entra em pânico no `init()` — é dado próprio embutido no binário,
+  então é erro de build, não condição de runtime.
+- **`AppliesTo`** restringe jobs a endpoints com pelo menos um parâmetro de
+  `query` ou `path` — header e body ficam fora de escopo por ora (body
+  precisaria saber o formato do payload, não só uma string pra substituir).
+- **Medição de ruído ANTES de injetar**: repete um request benigno (valor
+  fixo `"1"`, mesmo parâmetro, mesmo endpoint) `sqliNoiseSamples` (3) vezes e
+  usa a maior diferença de tamanho de corpo entre essas repetições como piso
+  de ruído — isso mede variação de conteúdo dinâmico (timestamp, nonce, CSRF
+  token) que nada tem a ver com o parâmetro injetado.
+- **Só marca suspeita se `diff(verdadeiro, falso) > ruído`**, nunca um limiar
+  fixo — "ruído" é propriedade do alvo, não uma constante do código.
+  Outros parâmetros do endpoint são preenchidos com o mesmo valor benigno
+  durante o teste, pra um parâmetro obrigatório vazio não confundir o
+  resultado.
+- **Não lê `Target.Baseline` como conteúdo** — aquela baseline foi coletada
+  sem nenhum parâmetro preenchido, então não serve pra responder "mudar este
+  parâmetro muda a resposta?". Reusa só `Target.Baseline.URL` pra descobrir
+  scheme/host do alvo, já que nada mais no contrato de `Check` carrega isso.
+  Sem baseline (coleta falhou), o check devolve `Skippedf` — não tem como
+  saber pra onde mandar o request.
+- **`CapturedRequest` completo**: `Method`, `URL` (já com o payload
+  verdadeiro codificado, pronta pra reproduzir com `curl` ou pelo estágio
+  `attack`), `InjectedParam`, `Payload`.
+- **Sonda com o método real do endpoint, não força GET.** Segue o princípio
+  já declarado em §1 ("só testa métodos seguros: GET, POST de teste") —
+  DELETE/PUT/PATCH nunca chegam neste check (o gate não-destrutivo do engine
+  já filtra `Destructive` antes de qualquer job existir); POST fica em
+  escopo de propósito. Tradeoff consciente: um endpoint POST que acaba não
+  sendo vulnerável ainda absorve até `sqliNoiseSamples + 2×pares` requests
+  por parâmetro até ser descartado — se aquela rota cria um recurso a cada
+  chamada, sobra dado de teste real (modesto, com rate limit) no lab. Forçar
+  GET evitaria isso, mas um servidor que roteia estrito por método
+  responderia 404 em toda sonda e o check "limparia" uma rota que nunca
+  chegou a exercitar de verdade — um jeito de falhar pior do que umas linhas
+  extra no banco do próprio lab do operador.
 
 ---
 
