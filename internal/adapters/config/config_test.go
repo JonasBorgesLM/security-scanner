@@ -172,3 +172,26 @@ func TestLoad_MissingEnvVar(t *testing.T) {
 		t.Errorf("error = %q, want it to name the missing environment variable", err.Error())
 	}
 }
+
+func TestLoad_BurstIsOptional(t *testing.T) {
+	t.Setenv("SCANNER_TEST_LAB_PASSWORD", "s3cr3t-from-env")
+
+	cfg, err := Load("testdata/config.yaml")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	// The shipped example omits burst; the engine defaults it to 1.
+	if cfg.Engine.Burst != 0 {
+		t.Errorf("Engine.Burst = %d, want 0 when the file omits it", cfg.Engine.Burst)
+	}
+}
+
+func TestLoad_NegativeBurstIsRejected(t *testing.T) {
+	_, err := Load("testdata/negative-burst.yaml")
+	if err == nil {
+		t.Fatal("Load() error = nil, want an error for a negative engine.burst")
+	}
+	if !strings.Contains(err.Error(), "engine.burst") {
+		t.Errorf("error = %q, want it to name the offending field", err)
+	}
+}

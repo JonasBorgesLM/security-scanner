@@ -248,16 +248,22 @@ Implementado em `internal/core/engine`:
 
 - **`Collect(ctx, endpoints)`** — a *coleta inicial*: um request por endpoint,
   paralelizado no pool e limitado pelo rate limiter, produzindo `[]Target` com a
-  baseline de cada um. Parâmetros de path (`{id}`) são preenchidos com um
-  placeholder; um 404 ou 400 continua sendo baseline válida para, por exemplo, um
-  check de headers ausentes. Endpoint destrutivo **não é coletado** sem opt-in —
-  não existe baseline inofensiva de um DELETE. Coleta que falha ainda devolve um
-  `Target`, com `BaselineErr` no lugar da resposta.
-- **`BuildJobs(targets, checks)`** — cruza cada target com os checks cujo
-  `AppliesTo` aceita, e reaplica a regra não-destrutiva (invariante de segurança
-  garantida num lugar só é uma refatoração de distância de não ser garantida em
-  lugar nenhum). Checks são pareados em ordem de nome, então a lista de jobs não
-  depende da ordem em que o registry entregou.
+  baseline de cada um. **Só envia método seguro** (GET/HEAD/OPTIONS): endpoint
+  declarado como POST/PUT/PATCH/DELETE é sondado com GET, e a substituição fica
+  registrada em `Response.ProbedMethod`. Uma fase chamada "coleta" não pode criar
+  nem destruir nada no alvo, e os headers que os checks passivos olham são
+  propriedade da rota, não do verbo. Parâmetros de path (`{id}`) são preenchidos com
+  um placeholder; 404, 405 ou 400 continuam sendo baseline válida. Endpoint
+  destrutivo **não é coletado** sem opt-in, então não custa request algum. Coleta
+  que falha ainda devolve um `Target`, com `BaselineErr` no lugar da resposta.
+  Cancelamento devolve o que já foi coletado **mais um erro** — o chamador não pode
+  confundir coleta truncada com coleta completa.
+- **`BuildJobs(targets, checks)`** — cruza cada target com os checks aplicáveis, e
+  reaplica a regra não-destrutiva (invariante de segurança garantida num lugar só é
+  uma refatoração de distância de não ser garantida em lugar nenhum). Dois filtros:
+  `AppliesTo`, e `CheckMetadata.RequiresAuth` — um check que só faz sentido com
+  sessão (IDOR e afins) não é pareado com rota pública. Checks são pareados em ordem
+  de nome, então a lista de jobs não depende da ordem em que o registry entregou.
 - **`Run(ctx, jobs)`** — worker pool de `max_concurrency` workers consumindo de um
   channel. Devolve os resultados em ordem dos jobs, independente de qual worker
   terminou primeiro.
@@ -276,8 +282,17 @@ Implementado em `internal/core/engine`:
   uma conexão pendurada.
 - **Check que entra em pânico vira erro no `Result`**, não derruba o scan inteiro —
   perder dez minutos de varredura por um bug num check seria pior do que reportá-lo.
+  Pânico fora de um check (na coleta, digamos) é contido pelo pool: aquele item some
+  do resultado e a fase se reporta incompleta.
+- **`Run` carimba o que já sabe em cada `Finding`**: `Endpoint`, `CheckName`,
+  `Severity`, `OWASPCategory` e um `ID` determinístico. Assim nenhum check repete
+  metadado que já declarou — e nenhum pode esquecer o `Endpoint`, que é justamente o
+  que o estágio `attack` precisa para reproduzir.
+- **Check que não consegue concluir devolve `model.Skippedf(...)`** e vira
+  `Result.Skipped` com o motivo, nunca finding e nunca erro. Rota mostrada como limpa
+  sem ter sido examinada é pior que rota assumidamente não examinada.
 - Erro de um check é registrado no `Result.Err` daquele job; `Run` só devolve erro
-  para falha do run inteiro (cancelamento).
+  quando algum job ficou sem rodar.
 
 O login/re-auth do `Authenticator` fica *abaixo* do limiter e portanto não é
 limitado por ele — decisão consciente: logins são raros e já colapsados num único

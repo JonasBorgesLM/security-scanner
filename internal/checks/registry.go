@@ -51,29 +51,13 @@ func RegisterCheck(c model.Check) {
 	registry[meta.Name] = c
 }
 
-// Get returns the registered check with the given name.
-func Get(name string) (model.Check, bool) {
-	mu.RLock()
-	defer mu.RUnlock()
-
-	c, ok := registry[name]
-	return c, ok
-}
-
-// Names lists every registered check name, sorted.
+// Names lists every registered check name, sorted. It backs the "registered
+// checks are ..." half of an unknown-name error, and a future --list flag.
 func Names() []string {
 	mu.RLock()
 	defer mu.RUnlock()
 
 	return slices.Sorted(maps.Keys(registry))
-}
-
-// All returns every registered check in name order.
-func All() []model.Check {
-	mu.RLock()
-	defer mu.RUnlock()
-
-	return checksByName(slices.Sorted(maps.Keys(registry)))
 }
 
 // Enabled resolves the names from checks.enabled in config.yaml into the

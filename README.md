@@ -24,6 +24,8 @@ A ferramenta impõe essa restrição tecnicamente, não só por convenção:
   allowlist — configuração incoerente falha cedo, com mensagem explícita.
 - **Não-destrutivo por padrão:** endpoints `DELETE`/`PUT`/`PATCH` são pulados a menos
   que `engine.test_destructive: true` seja definido explicitamente.
+- **A coleta inicial só usa métodos seguros.** Um endpoint declarado como `POST` é
+  sondado com `GET` — a fase que monta a baseline nunca cria nem destrói nada no alvo.
 - **Gentil por design:** worker pool + rate limiter evitam derrubar o próprio alvo.
 
 ---
@@ -106,9 +108,18 @@ O projeto está em construção. Hoje:
 
 | Estágio | Estado |
 |---|---|
-| `scan` | Importa o spec, autentica e grava `findings.json`. **Nenhum check registrado ainda**, então o arquivo sai com zero findings. |
+| `scan` | **Funcional.** Importa o spec, autentica, coleta uma baseline por endpoint, roda os checks habilitados e grava `findings.json`. |
 | `attack` | Não implementado (sai com erro e código 1) |
 | `report` | Não implementado (sai com erro e código 1) |
+
+Checks implementados:
+
+| Check | Tipo | O que reporta |
+|---|---|---|
+| `missing-headers` | passivo | Cabeçalhos de segurança ausentes na resposta (`X-Content-Type-Options`, `Content-Security-Policy`, `Referrer-Policy`, e `Strict-Transport-Security` só sobre HTTPS) |
+
+Um nome desconhecido em `checks.enabled` aborta a execução antes de qualquer
+request — um typo não desabilita um check em silêncio.
 
 Exemplo de execução do `scan`:
 
@@ -119,11 +130,14 @@ target:     http://localhost:8080
 scope:      [localhost:8080 127.0.0.1:8080]
 spec:       openapi.yaml
 endpoints:  6 (5 require auth, 2 destructive)
+checks:     missing-headers
             2 destructive endpoint(s) will be skipped (engine.test_destructive is false)
 
-wrote findings.json (0 findings)
-note: no checks are registered yet — this run only imported and authenticated against the target.
+wrote findings.json (9 findings, 0 skipped, 0 failed)
 ```
+
+Endpoints que não puderam ser examinados aparecem como `skipped`, com o motivo —
+nunca como "limpos".
 
 Ordem de implementação dos checks: headers ausentes (passivo) → secrets expostos
 (passivo) → SQLi boolean-based (ativo) → XSS refletido (ativo) → IDOR / JWT fraco
@@ -146,10 +160,12 @@ internal/
     config/           leitura e validação do config.yaml
   core/
     model/            Endpoint, Check, Finding, Evidence
-    engine/           worker pool + rate limiter + orquestração
+    engine/           coleta de baseline + worker pool + rate limiter
     auth/             login automático + re-auth em 401
     scope/            ScopeGuard (allowlist de hosts)
   checks/             um arquivo por check, auto-registro via init()
+    registry.go       RegisterCheck + resolução de checks.enabled
+    headers.go        missing-headers (passivo)
   envexpand/          expansão de ${VAR} compartilhada
   report/             templates HTML + writer JSON
 payloads/             wordlists carregadas via go:embed
@@ -167,6 +183,7 @@ go test ./...              # todos os testes
 go test ./... -race        # detector de race
 go test ./... -cover       # cobertura
 go vet ./...               # análise estática
+golangci-lint run ./...    # lint (errcheck, bodyclose, errorlint, staticcheck…)
 ```
 
 Os testes não tocam a rede externa: checks rodam contra um `HTTPClient` falso
@@ -174,7 +191,13 @@ alimentado por `testdata/`, e os testes de autenticação usam `httptest.Server`
 loopback. Há testes dedicados para o `ScopeGuard` (host fora da allowlist é
 bloqueado antes de virar conexão) e para o determinismo do parser.
 
-O CI (`.github/workflows/ci.yml`) roda gofmt, vet, testes, race e cobertura.
+Há um teste de ponta a ponta (`cmd/scanner/pipeline_test.go`) que monta a pilha
+inteira — ScopeGuard, autenticação, rate limiter, coleta e check real — contra um
+`httptest.Server`, e verifica entre outras coisas que a coleta nunca envia um método
+inseguro, que endpoint destrutivo não é tocado, e que dois scans do mesmo alvo
+produzem arquivos byte a byte idênticos.
+
+O CI (`.github/workflows/ci.yml`) roda gofmt, vet, golangci-lint, testes, race e cobertura.
 
 ---
 

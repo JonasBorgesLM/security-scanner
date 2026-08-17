@@ -1,0 +1,35 @@
+version: "2"
+
+# Deliberately a small, high-signal set. gofmt, vet, test and -race already
+# run in CI; these add the classes of mistake that suite cannot see —
+# swallowed errors, leaked response bodies, broken error chains, dead code.
+linters:
+  default: none
+  enable:
+    - bodyclose     # a leaked body is a slow leak across a long scan
+    - errcheck      # a swallowed error is how a scanner reports a clean bill of health it never earned
+    - errorlint     # catches %v where %w was meant, which silently breaks errors.Is downstream
+    - govet
+    - ineffassign
+    - misspell
+    - staticcheck
+    - unconvert
+    - unused
+    - usetesting
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      exclude-functions:
+        # Closing a response body we have finished reading has no useful
+        # error to act on; the deferred Close is the idiom, not an oversight.
+        - (io.Closer).Close
+
+  exclusions:
+    rules:
+      # Test helpers deliberately ignore errors on responses they only
+      # assert the status of. Production code gets no such latitude.
+      - path: _test\.go
+        linters:
+          - bodyclose
+          - errcheck

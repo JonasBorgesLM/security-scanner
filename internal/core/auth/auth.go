@@ -130,7 +130,7 @@ func (a *Authenticator) Do(req *http.Request) (*http.Response, error) {
 	if token == "" {
 		var err error
 		if token, err = a.reAuth(req.Context(), gen); err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrReAuthFailed, err)
+			return nil, fmt.Errorf("%w: %w", ErrReAuthFailed, err)
 		}
 		_, gen = a.currentToken()
 	}
@@ -150,7 +150,7 @@ func (a *Authenticator) Do(req *http.Request) (*http.Response, error) {
 
 	newToken, err := a.reAuth(req.Context(), gen)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrReAuthFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrReAuthFailed, err)
 	}
 
 	retry, err := withToken(req, a.cfg.TokenHeader, a.cfg.TokenPrefix+newToken)

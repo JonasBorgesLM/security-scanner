@@ -69,16 +69,16 @@ func TestRegisterCheck_RegistersAndLooksUp(t *testing.T) {
 	headers := newFake("missing-headers", model.KindPassive)
 	RegisterCheck(headers)
 
-	got, ok := Get("missing-headers")
-	if !ok {
-		t.Fatal("Get() ok = false, want the registered check")
+	got, err := Enabled([]string{"missing-headers"})
+	if err != nil {
+		t.Fatalf("Enabled() error = %v", err)
 	}
-	if got != model.Check(headers) {
-		t.Error("Get() returned a different check than the one registered")
+	if len(got) != 1 || got[0] != model.Check(headers) {
+		t.Error("Enabled() did not return the check that was registered")
 	}
 
-	if _, ok := Get("never-registered"); ok {
-		t.Error("Get() ok = true for a name that was never registered")
+	if _, err := Enabled([]string{"never-registered"}); err == nil {
+		t.Error("Enabled() error = nil for a name that was never registered")
 	}
 }
 
@@ -117,7 +117,7 @@ func TestRegisterCheck_RejectsNil(t *testing.T) {
 	wantPanic(t, "nil Check", func() { RegisterCheck(nil) })
 }
 
-func TestNamesAndAll_AreSortedByName(t *testing.T) {
+func TestNames_AreSortedByName(t *testing.T) {
 	isolate(t)
 
 	// Registered out of order on purpose.
@@ -131,26 +131,13 @@ func TestNamesAndAll_AreSortedByName(t *testing.T) {
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Errorf("Names() = %v, want %v", names, want)
 	}
-
-	all := All()
-	if len(all) != len(want) {
-		t.Fatalf("All() returned %d checks, want %d", len(all), len(want))
-	}
-	for i, name := range want {
-		if got := all[i].Metadata().Name; got != name {
-			t.Errorf("All()[%d] = %q, want %q", i, got, name)
-		}
-	}
 }
 
-func TestNamesAndAll_EmptyRegistry(t *testing.T) {
+func TestNames_EmptyRegistry(t *testing.T) {
 	isolate(t)
 
 	if got := Names(); len(got) != 0 {
 		t.Errorf("Names() = %v, want empty", got)
-	}
-	if got := All(); len(got) != 0 {
-		t.Errorf("All() returned %d checks, want 0", len(got))
 	}
 }
 

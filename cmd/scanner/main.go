@@ -14,15 +14,19 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/adapters/config"
 	"github.com/JonasBorgesLM/security-scanner/internal/adapters/httpclient"
 	"github.com/JonasBorgesLM/security-scanner/internal/adapters/openapi"
+	"github.com/JonasBorgesLM/security-scanner/internal/checks"
 	"github.com/JonasBorgesLM/security-scanner/internal/core/auth"
+	"github.com/JonasBorgesLM/security-scanner/internal/core/engine"
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
 	"github.com/JonasBorgesLM/security-scanner/internal/core/scope"
+	"github.com/JonasBorgesLM/security-scanner/internal/ports"
 )
 
 func main() {
@@ -107,36 +111,101 @@ func runScan(args []string) error {
 	guard := scope.NewScopeGuard(cfg.Scope.AllowedHosts)
 	client := httpclient.New(guard, nil)
 
+	// Resolve the enabled checks before spending a single request: a typo in
+	// checks.enabled should fail immediately, not after a full collection.
+	enabled, err := checks.Enabled(cfg.Checks.Enabled)
+	if err != nil {
+		return err
+	}
+
 	authenticator, err := auth.New(cfg.Target.BaseURL, authConfig(cfg), client)
 	if err != nil {
 		return err
 	}
 
-	// Log in eagerly so bad credentials fail here, with a clear message,
-	// rather than surfacing as a wave of skipped routes later.
+	// Only put the Authenticator in the path when the spec actually declares
+	// protected routes. It logs in lazily on its first request, so wrapping
+	// an unauthenticated API in it would force a pointless — and failing —
+	// login before any scanning could start.
+	scanClient := ports.HTTPClient(client)
 	if countRequiringAuth(endpoints) > 0 {
+		// Log in eagerly so bad credentials fail here, with a clear message,
+		// rather than surfacing as a wave of skipped routes later.
 		if err := authenticator.Authenticate(ctx); err != nil {
 			return err
 		}
+		scanClient = authenticator
 	}
 
-	printScanSummary(cfg, *specPath, endpoints)
+	eng, err := engine.New(engineConfig(cfg), scanClient)
+	if err != nil {
+		return err
+	}
 
-	// No checks are registered yet (internal/checks is still a stub), so
-	// this run discovers routes and proves the wiring without producing
-	// findings. The file is still written so the stage contract holds and
-	// `attack` has a well-formed input the moment checks land.
+	printScanSummary(cfg, *specPath, endpoints, enabled)
+
+	targets, err := eng.Collect(ctx, endpoints)
+	if err != nil {
+		return fmt.Errorf("scan: baseline collection incomplete, refusing to report a partial scan as a whole one: %w", err)
+	}
+
+	results, err := eng.Run(ctx, eng.BuildJobs(targets, enabled))
+	if err != nil {
+		return fmt.Errorf("scan: checks incomplete, refusing to report a partial scan as a whole one: %w", err)
+	}
+
+	findings, skipped, failed := summarise(results)
+
 	out := model.FindingsFile{
 		SchemaVersion: model.SchemaVersion,
-		Findings:      []model.Finding{},
+		Findings:      findings,
 	}
 	if err := writeJSON(*outPath, out); err != nil {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "\nwrote %s (0 findings)\n", *outPath)
-	fmt.Fprintln(os.Stderr, "note: no checks are registered yet — this run only imported and authenticated against the target.")
+	fmt.Fprintf(os.Stderr, "\nwrote %s (%d findings, %d skipped, %d failed)\n",
+		*outPath, len(findings), len(skipped), len(failed))
+	for _, s := range skipped {
+		fmt.Fprintf(os.Stderr, "  skipped: %s\n", s)
+	}
+	for _, f := range failed {
+		fmt.Fprintf(os.Stderr, "  failed:  %s\n", f)
+	}
 	return nil
+}
+
+// summarise flattens results into the findings to write plus human-readable
+// lines for the runs that could not conclude. Skipped and failed routes are
+// reported explicitly: a scan that silently omits what it could not examine
+// reads as a clean bill of health it has not earned.
+func summarise(results []engine.Result) (findings []model.Finding, skipped, failed []string) {
+	findings = []model.Finding{}
+	for _, r := range results {
+		switch {
+		case r.Skipped:
+			skipped = append(skipped, fmt.Sprintf("%s on %s %s: %s",
+				r.CheckName, r.Endpoint.Method, r.Endpoint.Path, r.SkipReason))
+		case r.Err != nil:
+			failed = append(failed, fmt.Sprintf("%s on %s %s: %v",
+				r.CheckName, r.Endpoint.Method, r.Endpoint.Path, r.Err))
+		default:
+			findings = append(findings, r.Findings...)
+		}
+	}
+	return findings, skipped, failed
+}
+
+// engineConfig maps the YAML-facing config onto the engine's own, the same
+// adapter/core seam authConfig sits on.
+func engineConfig(cfg *config.Config) engine.Config {
+	return engine.Config{
+		BaseURL:           cfg.Target.BaseURL,
+		MaxConcurrency:    cfg.Engine.MaxConcurrency,
+		RequestsPerSecond: cfg.Engine.RequestsPerSecond,
+		Burst:             cfg.Engine.Burst,
+		TestDestructive:   cfg.Engine.TestDestructive,
+	}
 }
 
 func runAttack(args []string) error {
@@ -205,14 +274,20 @@ func countDestructive(endpoints []model.Endpoint) int {
 
 // printScanSummary reports what the run is about to work with. It goes to
 // stderr so stdout stays free for future machine-readable output.
-func printScanSummary(cfg *config.Config, specPath string, endpoints []model.Endpoint) {
+func printScanSummary(cfg *config.Config, specPath string, endpoints []model.Endpoint, enabled []model.Check) {
 	destructive := countDestructive(endpoints)
+
+	names := make([]string, len(enabled))
+	for i, c := range enabled {
+		names[i] = c.Metadata().Name
+	}
 
 	fmt.Fprintf(os.Stderr, "target:     %s\n", cfg.Target.BaseURL)
 	fmt.Fprintf(os.Stderr, "scope:      %v\n", cfg.Scope.AllowedHosts)
 	fmt.Fprintf(os.Stderr, "spec:       %s\n", specPath)
 	fmt.Fprintf(os.Stderr, "endpoints:  %d (%d require auth, %d destructive)\n",
 		len(endpoints), countRequiringAuth(endpoints), destructive)
+	fmt.Fprintf(os.Stderr, "checks:     %s\n", strings.Join(names, ", "))
 
 	if destructive > 0 && !cfg.Engine.TestDestructive {
 		fmt.Fprintf(os.Stderr, "            %d destructive endpoint(s) will be skipped (engine.test_destructive is false)\n", destructive)
@@ -236,10 +311,11 @@ func writeJSON(path string, v any) error {
 		return fmt.Errorf("create temp file for %s: %w", path, err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op once the rename below succeeds
+	// No-op once the rename below succeeds; nothing useful to do if it fails.
+	defer func() { _ = os.Remove(tmpName) }()
 
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	if err := tmp.Close(); err != nil {

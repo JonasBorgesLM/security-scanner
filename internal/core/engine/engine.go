@@ -12,6 +12,7 @@
 package engine
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,10 +32,10 @@ import (
 	"github.com/JonasBorgesLM/security-scanner/internal/ports"
 )
 
-// MaxBodyBytes caps how much of any single response is held in memory.
+// maxBodyBytes caps how much of any single response is held in memory.
 // Baselines are kept for the whole run, so an unbounded read would scale
 // with the size of the spec rather than with anything the operator chose.
-const MaxBodyBytes = 2 << 20 // 2 MiB
+const maxBodyBytes = 2 << 20 // 2 MiB
 
 // ErrPassiveCheckRequest is returned to a passive check that tries to send
 // a request. Passive checks are defined by working from the baseline the
@@ -43,6 +45,14 @@ var ErrPassiveCheckRequest = errors.New("engine: a passive check must not send r
 
 // pathParam matches an OpenAPI path template segment such as {id}.
 var pathParam = regexp.MustCompile(`\{[^/{}]+\}`)
+
+// safeMethods are the methods RFC 9110 defines as safe: they are not
+// expected to change state on the target.
+var safeMethods = map[string]bool{
+	http.MethodGet:     true,
+	http.MethodHead:    true,
+	http.MethodOptions: true,
+}
 
 // Config mirrors the engine: section of config.yaml, plus the target's base
 // URL that baseline collection needs.
@@ -69,13 +79,20 @@ type Job struct {
 	Check  model.Check
 }
 
-// Result is the outcome of a single Job. Err being non-nil means the check
-// could not complete; it is never itself evidence of a vulnerability.
+// Result is the outcome of a single Job.
 type Result struct {
 	Endpoint  model.Endpoint
 	CheckName string
 	Findings  []model.Finding
-	Err       error
+	// Skipped means the check declined to conclude — no baseline, failed
+	// auth, whatever SkipReason says. It is not a failure and never a
+	// finding, but it must reach the report: a route shown as clean when it
+	// was never examined is worse than one openly marked unexamined.
+	Skipped    bool
+	SkipReason string
+	// Err means the check could not complete. It is never itself evidence
+	// of a vulnerability.
+	Err error
 }
 
 // Engine runs Jobs through a bounded, rate-limited worker pool.
@@ -130,12 +147,21 @@ func New(cfg Config, client ports.HTTPClient) (*Engine, error) {
 // the request count proportional to the size of the spec rather than to the
 // spec times the number of enabled checks.
 //
-// Destructive endpoints are not collected at all without the opt-in — there
-// is no such thing as a harmless baseline DELETE.
+// Collection only ever sends a safe method. An endpoint declared as POST,
+// PUT, PATCH or DELETE is probed with GET instead, and the substitution is
+// recorded in Response.ProbedMethod. A phase named "collect" must not
+// create or destroy anything on the target — the headers and server
+// fingerprint that passive checks look at are properties of the route, not
+// of the verb used to reach it.
+//
+// Destructive endpoints are skipped entirely without the opt-in, so they
+// cost no request at all.
 //
 // A failed collection still yields a Target, carrying BaselineErr instead of
 // a response. Targets come back in the order their endpoints were given.
-func (e *Engine) Collect(ctx context.Context, endpoints []model.Endpoint) []model.Target {
+// A cancelled context yields the targets gathered so far plus ctx.Err(), so
+// a caller cannot mistake a truncated collection for a complete one.
+func (e *Engine) Collect(ctx context.Context, endpoints []model.Endpoint) ([]model.Target, error) {
 	eligible := make([]model.Endpoint, 0, len(endpoints))
 	for _, ep := range endpoints {
 		if ep.Destructive && !e.cfg.TestDestructive {
@@ -144,54 +170,79 @@ func (e *Engine) Collect(ctx context.Context, endpoints []model.Endpoint) []mode
 		eligible = append(eligible, ep)
 	}
 
-	return runPool(ctx, e.cfg.MaxConcurrency, eligible, e.collectOne)
+	targets := runPool(ctx, e.cfg.MaxConcurrency, eligible, e.collectOne)
+	if len(targets) < len(eligible) {
+		return targets, cmp.Or(ctx.Err(), errIncomplete)
+	}
+	return targets, nil
 }
+
+// errIncomplete is the fallback when work was left undone but the context
+// itself reports no error — it should not happen, and saying so beats
+// returning nil and implying the run was complete.
+var errIncomplete = errors.New("engine: run did not process every item")
 
 func (e *Engine) collectOne(ctx context.Context, ep model.Endpoint) model.Target {
 	target := model.Target{Endpoint: ep}
 
-	req, err := e.baselineRequest(ctx, ep)
+	method := baselineMethod(ep.Method)
+
+	req, err := e.baselineRequest(ctx, ep, method)
 	if err != nil {
 		target.BaselineErr = err
 		return target
 	}
+	probedURL := req.URL.String()
 
 	start := time.Now()
 	resp, err := e.client.Do(req)
 	if err != nil {
-		target.BaselineErr = fmt.Errorf("engine: baseline %s %s: %w", ep.Method, ep.Path, err)
+		target.BaselineErr = fmt.Errorf("engine: baseline %s %s: %w", method, ep.Path, err)
 		return target
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxBodyBytes))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
-		target.BaselineErr = fmt.Errorf("engine: reading baseline %s %s: %w", ep.Method, ep.Path, err)
+		target.BaselineErr = fmt.Errorf("engine: reading baseline %s %s: %w", method, ep.Path, err)
 		return target
 	}
 
 	target.Baseline = &model.Response{
+		URL:        probedURL,
 		StatusCode: resp.StatusCode,
-		Headers:    resp.Header,
-		Body:       body,
-		Duration:   time.Since(start),
+		// Cloned so the baseline does not alias the map net/http still
+		// holds, and so every check reads a map nothing else can touch.
+		Headers:      resp.Header.Clone(),
+		Body:         body,
+		Duration:     time.Since(start),
+		ProbedMethod: method,
 	}
 	return target
 }
 
+// baselineMethod returns the method to probe an endpoint with: its own when
+// that is safe, GET otherwise.
+func baselineMethod(method string) string {
+	if safeMethods[method] {
+		return method
+	}
+	return http.MethodGet
+}
+
 // baselineRequest builds the untouched request for an endpoint. Path
 // template parameters are filled with a harmless placeholder: the goal is a
-// representative response, and a 404 or 400 is still a perfectly good
+// representative response, and a 404, 405 or 400 is still a perfectly good
 // baseline for, say, a missing-security-header check.
-func (e *Engine) baselineRequest(ctx context.Context, ep model.Endpoint) (*http.Request, error) {
+func (e *Engine) baselineRequest(ctx context.Context, ep model.Endpoint, method string) (*http.Request, error) {
 	target, err := url.JoinPath(e.cfg.BaseURL, pathParam.ReplaceAllString(ep.Path, "1"))
 	if err != nil {
 		return nil, fmt.Errorf("engine: building baseline URL for %s: %w", ep.Path, err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, ep.Method, target, nil)
+	req, err := http.NewRequestWithContext(ctx, method, target, nil)
 	if err != nil {
-		return nil, fmt.Errorf("engine: building baseline request for %s %s: %w", ep.Method, ep.Path, err)
+		return nil, fmt.Errorf("engine: building baseline request for %s %s: %w", method, ep.Path, err)
 	}
 	return req, nil
 }
@@ -205,7 +256,8 @@ func (e *Engine) baselineRequest(ctx context.Context, ep model.Endpoint) (*http.
 //
 // Checks are paired in name order so the resulting job list — and therefore
 // the scan's output — does not depend on the order the registry happened to
-// hand them over in.
+// hand them over in. (Enabled already sorts; the engine does not know that,
+// and sorting a handful of checks costs nothing.)
 func (e *Engine) BuildJobs(targets []model.Target, checks []model.Check) []Job {
 	ordered := slices.Clone(checks)
 	slices.SortStableFunc(ordered, func(a, b model.Check) int {
@@ -218,14 +270,26 @@ func (e *Engine) BuildJobs(targets []model.Target, checks []model.Check) []Job {
 			continue
 		}
 		for _, c := range ordered {
-			applies := c.Metadata().AppliesTo
-			if applies != nil && !applies(t.Endpoint) {
+			if !applies(c.Metadata(), t.Endpoint) {
 				continue
 			}
 			jobs = append(jobs, Job{Target: t, Check: c})
 		}
 	}
 	return jobs
+}
+
+// applies decides whether a check is meaningful for an endpoint.
+func applies(meta model.CheckMetadata, ep model.Endpoint) bool {
+	// A check that needs a session (IDOR and friends) has nothing to say
+	// about a route that takes no credentials in the first place.
+	if meta.RequiresAuth && !ep.RequiresAuth {
+		return false
+	}
+	if meta.AppliesTo != nil && !meta.AppliesTo(ep) {
+		return false
+	}
+	return true
 }
 
 // Run executes every job across the worker pool, returning results in job
@@ -236,17 +300,24 @@ func (e *Engine) BuildJobs(targets []model.Target, checks []model.Check) []Job {
 // gathered so far are still returned alongside ctx.Err(). Checks receive
 // ctx too, so an in-flight HTTP request unwinds instead of pinning shutdown
 // behind a hung connection.
+//
+// The error reports incomplete work, not mere cancellation: a run whose
+// last job finished before the context was cancelled processed everything
+// it was given and returns nil.
 func (e *Engine) Run(ctx context.Context, jobs []Job) ([]Result, error) {
-	if len(jobs) == 0 {
-		return nil, ctx.Err()
+	results := runPool(ctx, e.cfg.MaxConcurrency, jobs, e.runJob)
+	if len(results) < len(jobs) {
+		return results, cmp.Or(ctx.Err(), errIncomplete)
 	}
-	return runPool(ctx, e.cfg.MaxConcurrency, jobs, e.runJob), ctx.Err()
+	return results, nil
 }
 
-// runJob executes one check, converting a panic into an ordinary error. A
-// single misbehaving check must not discard the findings of an entire scan
-// that may have been running for minutes; reporting it as a failed Result
-// keeps it visible instead of hiding it.
+// runJob executes one check and normalises its outcome.
+//
+// It recovers panics itself, rather than leaning on the pool's guard, so a
+// panicking check still produces a Result naming it. The pool's guard is
+// the last resort that keeps the process alive; this is the one that keeps
+// the failure attributable.
 func (e *Engine) runJob(ctx context.Context, job Job) (res Result) {
 	meta := job.Check.Metadata()
 	ep := job.Target.Endpoint
@@ -255,6 +326,7 @@ func (e *Engine) runJob(ctx context.Context, job Job) (res Result) {
 	defer func() {
 		if r := recover(); r != nil {
 			res.Findings = nil
+			res.Skipped, res.SkipReason = false, ""
 			res.Err = fmt.Errorf("engine: check %q panicked on %s %s: %v",
 				meta.Name, ep.Method, ep.Path, r)
 		}
@@ -265,17 +337,58 @@ func (e *Engine) runJob(ctx context.Context, job Job) (res Result) {
 	// than by trusting each check to behave.
 	client := e.client
 	if meta.Kind == model.KindPassive {
-		client = deniedClient{}
+		client = deniedClient{checkName: meta.Name}
 	}
 
 	findings, err := job.Check.Run(ctx, job.Target, client)
-	if err != nil {
+	switch {
+	case errors.Is(err, model.ErrSkipped):
+		res.Skipped = true
+		res.SkipReason = err.Error()
+		return res
+	case err != nil:
 		res.Err = fmt.Errorf("engine: check %q on %s %s: %w",
 			meta.Name, ep.Method, ep.Path, err)
 		return res
 	}
-	res.Findings = findings
+
+	res.Findings = enrich(findings, meta, ep)
 	return res
+}
+
+// enrich fills in the parts of a Finding the engine already knows, so that
+// every check does not have to repeat metadata it has already declared —
+// and cannot forget to. Endpoint in particular is what the attack stage
+// needs to reproduce a finding, so leaving it to each check would make one
+// omission enough to break the pipeline.
+//
+// A check may set Finding.ID to distinguish several findings it produced
+// for one endpoint; whatever it sets is namespaced rather than trusted to
+// be globally unique.
+func enrich(findings []model.Finding, meta model.CheckMetadata, ep model.Endpoint) []model.Finding {
+	for i := range findings {
+		f := &findings[i]
+		f.CheckName = meta.Name
+		f.Endpoint = ep
+		if f.Severity == "" {
+			f.Severity = meta.Severity
+		}
+		if f.OWASPCategory == "" {
+			f.OWASPCategory = meta.OWASPCategory
+		}
+		f.ID = findingID(meta.Name, ep, f.ID, i)
+	}
+	return findings
+}
+
+// findingID builds a stable identifier. It has to survive re-running the
+// same scan unchanged, because findings.json is committed and diffed by
+// hand — so it is derived only from things that do not vary between runs.
+func findingID(checkName string, ep model.Endpoint, discriminator string, index int) string {
+	if discriminator == "" {
+		discriminator = strconv.Itoa(index)
+	}
+	return fmt.Sprintf("%s:%s:%s:%s", checkName, ep.Method, ep.Path, discriminator)
 }
 
 // runPool spreads items across at most workers goroutines and returns the
@@ -305,15 +418,11 @@ func runPool[T, R any](ctx context.Context, workers int, items []T, fn func(cont
 	// would still pick up.
 	ch := make(chan indexed)
 
-	// Where it matters, fn recovers panics itself (see runJob), so nothing
-	// here escapes into WaitGroup.Go, which requires its function not to
-	// panic.
 	var wg sync.WaitGroup
 	for range workers {
 		wg.Go(func() {
 			for it := range ch {
-				results[it.i] = fn(ctx, it.item)
-				completed[it.i] = true
+				results[it.i], completed[it.i] = guard(ctx, it.item, fn)
 			}
 		})
 	}
@@ -344,13 +453,33 @@ feed:
 	return out
 }
 
+// guard runs fn and turns a panic into a dropped item rather than a dead
+// process. A single misbehaving check — or a bug in collection — must not
+// discard the work of a scan that may have been running for minutes.
+// WaitGroup.Go also requires that its function not panic, so this is what
+// makes the pool's use of it legitimate.
+//
+// The item is reported as not-completed, which is exactly how an
+// undispatched item is treated: it simply does not appear in the results,
+// and Run/Collect report the run as incomplete.
+func guard[T, R any](ctx context.Context, item T, fn func(context.Context, T) R) (res R, ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			var zero R
+			res, ok = zero, false
+		}
+	}()
+	return fn(ctx, item), true
+}
+
 // deniedClient is the ports.HTTPClient handed to passive checks.
-type deniedClient struct{}
+type deniedClient struct{ checkName string }
 
 var _ ports.HTTPClient = deniedClient{}
 
-func (deniedClient) Do(req *http.Request) (*http.Response, error) {
-	return nil, fmt.Errorf("%w (attempted %s %s)", ErrPassiveCheckRequest, req.Method, req.URL)
+func (d deniedClient) Do(req *http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("%w (check %q attempted %s %s)",
+		ErrPassiveCheckRequest, d.checkName, req.Method, req.URL)
 }
 
 // rateLimitedClient paces every outbound request. It is a ports.HTTPClient

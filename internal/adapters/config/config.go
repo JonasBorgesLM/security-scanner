@@ -65,10 +65,13 @@ type Auth struct {
 
 // Engine tunes the worker pool + rate limiter that drive active checks.
 type Engine struct {
-	MaxConcurrency    int      `yaml:"max_concurrency"`
-	RequestsPerSecond float64  `yaml:"requests_per_second"`
-	Timeout           Duration `yaml:"timeout"`
-	TestDestructive   bool     `yaml:"test_destructive"`
+	MaxConcurrency    int     `yaml:"max_concurrency"`
+	RequestsPerSecond float64 `yaml:"requests_per_second"`
+	// Burst is how many requests may go out at once before the sustained
+	// rate applies. Optional; the engine defaults it to 1 (strictly paced).
+	Burst           int      `yaml:"burst"`
+	Timeout         Duration `yaml:"timeout"`
+	TestDestructive bool     `yaml:"test_destructive"`
 }
 
 // Checks lists which registered checks (see internal/checks) run.
@@ -264,6 +267,9 @@ func (c *Config) validateEngine(errs *validationErrors) {
 	}
 	if c.Engine.RequestsPerSecond <= 0 {
 		errs.add("engine.requests_per_second must be greater than 0")
+	}
+	if c.Engine.Burst < 0 {
+		errs.add("engine.burst must not be negative")
 	}
 	if time.Duration(c.Engine.Timeout) <= 0 {
 		errs.add("engine.timeout is required and must be greater than 0")
