@@ -192,6 +192,7 @@ auth:
   credentials:
     username: admin
     password: ${LAB_PASSWORD}     # via env
+    username_field: email         # opcional, default "username" — chave JSON do login body
   token_path: data.access_token
   token_header: Authorization     # opcional, default Authorization
   token_prefix: "Bearer "

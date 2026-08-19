@@ -9,6 +9,7 @@ auth:
   credentials:
     username: admin
     password: ${SCANNER_TEST_LAB_PASSWORD}
+    username_field: email
   token_path: data.access_token
   token_header: Authorization
   token_prefix: "Bearer "

@@ -448,8 +448,9 @@ func authConfig(cfg *config.Config) auth.Config {
 		LoginEndpoint: cfg.Auth.LoginEndpoint,
 		Method:        cfg.Auth.Method,
 		Credentials: auth.Credentials{
-			Username: cfg.Auth.Credentials.Username,
-			Password: cfg.Auth.Credentials.Password,
+			Username:      cfg.Auth.Credentials.Username,
+			Password:      cfg.Auth.Credentials.Password,
+			UsernameField: cfg.Auth.Credentials.UsernameField,
 		},
 		TokenPath:   cfg.Auth.TokenPath,
 		TokenHeader: cfg.Auth.TokenHeader,

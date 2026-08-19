@@ -16,8 +16,9 @@ func TestAuthConfig_MapsEveryField(t *testing.T) {
 			LoginEndpoint: "/signin",
 			Method:        "PUT",
 			Credentials: config.Credentials{
-				Username: "admin",
-				Password: "already-expanded",
+				Username:      "admin",
+				Password:      "already-expanded",
+				UsernameField: "email",
 			},
 			TokenPath:   "data.access_token",
 			TokenHeader: "X-Token",
@@ -38,6 +39,9 @@ func TestAuthConfig_MapsEveryField(t *testing.T) {
 	}
 	if got.Credentials.Password != "already-expanded" {
 		t.Errorf("Password = %q, want already-expanded", got.Credentials.Password)
+	}
+	if got.Credentials.UsernameField != "email" {
+		t.Errorf("UsernameField = %q, want email", got.Credentials.UsernameField)
 	}
 	if got.TokenPath != "data.access_token" {
 		t.Errorf("TokenPath = %q, want data.access_token", got.TokenPath)

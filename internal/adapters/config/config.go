@@ -50,6 +50,11 @@ type Scope struct {
 type Credentials struct {
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
+	// UsernameField is the JSON key Username is sent under in the login
+	// request body. Optional; auth.New defaults it to "username" when
+	// empty. Set it to e.g. "email" for a target that logs in by email
+	// address instead of a literal username.
+	UsernameField string `yaml:"username_field"`
 }
 
 // Auth configures the automatic login + re-auth described in
