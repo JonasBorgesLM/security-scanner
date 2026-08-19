@@ -77,6 +77,7 @@ vez de escanear as rotas sem autenticação.
 |---|---|
 | `auth.login_endpoint` | Rota de login, resolvida contra o `base_url` |
 | `auth.credentials.username` / `password` | Credenciais do lab |
+| `auth.credentials.username_field` | Opcional, default `"username"` — chave JSON que carrega `username` no corpo do login (ex. `email`, para um alvo que loga por e-mail) |
 | `auth.token_path` | Caminho em notação de ponto até o token no JSON de resposta |
 
 ### Variáveis de ambiente

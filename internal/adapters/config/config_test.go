@@ -34,6 +34,9 @@ func TestLoad_ValidConfig(t *testing.T) {
 	if cfg.Auth.Credentials.Password != "s3cr3t-from-env" {
 		t.Errorf("Auth.Credentials.Password = %q, want the expanded env value, not the literal ${VAR}", cfg.Auth.Credentials.Password)
 	}
+	if cfg.Auth.Credentials.UsernameField != "email" {
+		t.Errorf("Auth.Credentials.UsernameField = %q, want email", cfg.Auth.Credentials.UsernameField)
+	}
 	if cfg.Auth.TokenPath != "data.access_token" {
 		t.Errorf("Auth.TokenPath = %q, want data.access_token", cfg.Auth.TokenPath)
 	}

@@ -35,6 +35,10 @@ auth:
     # Never commit a real credential. ${VAR} is read from the environment
     # and the scanner fails with a clear error if the variable is unset.
     password: ${LAB_PASSWORD}
+    # Optional. JSON key `username` is sent under in the login body.
+    # Defaults to "username"; set to e.g. "email" for a target that logs
+    # in by email address.
+    # username_field: email
   # Dot-notation path to the token inside the JSON login response.
   # For {"data": {"access_token": "..."}} this is data.access_token
   token_path: data.access_token

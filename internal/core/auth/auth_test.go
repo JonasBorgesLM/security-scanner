@@ -449,6 +449,49 @@ func TestNew_AppliesDefaults(t *testing.T) {
 	if a.cfg.TokenHeader != "Authorization" {
 		t.Errorf("TokenHeader = %q, want Authorization", a.cfg.TokenHeader)
 	}
+	if a.cfg.Credentials.UsernameField != "username" {
+		t.Errorf("Credentials.UsernameField = %q, want %q", a.cfg.Credentials.UsernameField, "username")
+	}
+}
+
+// TestAuthenticator_SendsCredentialsUnderCustomUsernameField covers a
+// target that logs in by email rather than a literal username (e.g.
+// task-api's POST /auth/login, which expects {"email": ...}): the login
+// body must carry Credentials.Username under the configured
+// UsernameField key, not a hardcoded "username".
+func TestAuthenticator_SendsCredentialsUnderCustomUsernameField(t *testing.T) {
+	var gotBody map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &gotBody); err != nil {
+			t.Fatalf("unmarshal login body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"token": "tok-1"})
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := testConfig()
+	cfg.Credentials.UsernameField = "email"
+	cfg.TokenPath = "token"
+	a, err := New(srv.URL, cfg, http.DefaultClient)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := a.Authenticate(t.Context()); err != nil {
+		t.Fatalf("Authenticate() error = %v", err)
+	}
+
+	if _, ok := gotBody["username"]; ok {
+		t.Errorf("login body has key %q, want it absent when UsernameField overrides it", "username")
+	}
+	if got := gotBody["email"]; got != cfg.Credentials.Username {
+		t.Errorf("login body[%q] = %q, want %q", "email", got, cfg.Credentials.Username)
+	}
+	if got := gotBody["password"]; got != cfg.Credentials.Password {
+		t.Errorf("login body[%q] = %q, want %q", "password", got, cfg.Credentials.Password)
+	}
 }
 
 func TestExtractToken(t *testing.T) {

@@ -38,6 +38,10 @@ const maxLoginBodyBytes = 1 << 20 // 1 MiB
 type Credentials struct {
 	Username string
 	Password string
+	// UsernameField is the JSON key Username is sent under in the login
+	// body, e.g. "email" for an API that logs in by email address rather
+	// than a literal username. Defaults to "username" when empty.
+	UsernameField string
 }
 
 // Config mirrors the auth: section of config.yaml (see
@@ -103,6 +107,9 @@ func New(baseURL string, cfg Config, inner ports.HTTPClient) (*Authenticator, er
 	}
 	if cfg.TokenHeader == "" {
 		cfg.TokenHeader = "Authorization"
+	}
+	if cfg.Credentials.UsernameField == "" {
+		cfg.Credentials.UsernameField = "username"
 	}
 
 	password, err := envexpand.Expand(cfg.Credentials.Password)
@@ -196,8 +203,8 @@ func (a *Authenticator) login(ctx context.Context) error {
 	}
 
 	body, err := json.Marshal(map[string]string{
-		"username": a.cfg.Credentials.Username,
-		"password": a.cfg.Credentials.Password,
+		a.cfg.Credentials.UsernameField: a.cfg.Credentials.Username,
+		"password":                      a.cfg.Credentials.Password,
 	})
 	if err != nil {
 		return fmt.Errorf("auth: encode login body: %w", err)
