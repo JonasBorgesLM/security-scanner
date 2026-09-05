@@ -2,6 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+The general engineering rules — effort proportional to the task, architecture
+discipline, clean code, testing, review, security, git hygiene, verification —
+are in `~/.claude/CLAUDE.md` and are already loaded. This file carries only what
+is true of this scanner.
+
 ## What this is
 
 A Go CLI security scanner built for study purposes, targeting **only the author's own lab API** (controlled environment). It discovers vulnerabilities, confirms them via controlled/non-destructive attacks, and generates a report. The full architecture and rationale live in `doc/security-scanner-projeto.md` — read it before making structural changes; it is the source of truth for this project.
@@ -81,3 +86,44 @@ Two rules any secret-adjacent check must keep: **redact the value** in `Evidence
 `sqli-boolean` is the first active check and sets the pattern any check that injects its own requests should follow: measure the endpoint's own noise (repeat a benign request `sqliNoiseSamples` times, same value every time) *before* comparing anything, and only flag a difference that clears that noise floor — never a fixed threshold, since what counts as "noise" is a property of the target, not a constant. It does not read `Target.Baseline`'s body (that baseline has no parameters filled in, so it cannot answer "does changing this parameter change the response"); it reuses only `Target.Baseline.URL` for the target's scheme and host, since nothing else in the `Check` contract carries that.
 
 A new check is one file in `internal/checks/`: implement `model.Check`, call `RegisterCheck` from `init()`, and add its name to `checks.enabled`. Return `model.Skippedf(...)` rather than guessing when the baseline is missing, and set only `Finding.ID` (as a discriminator) plus `Evidence` — the engine fills in the rest.
+
+## Global tooling, and where it helps here
+
+**Graphify checks invariant 1, which nothing else can.** ScopeGuard is
+centralized in the HTTP client, and the CLAUDE.md above says the failure mode
+out loud: handing a component a bare `*http.Client` "silently disables the
+boundary with no compile or test failure". A defect with no compile error and
+no failing test is exactly what a reachability query finds:
+
+```bash
+graphify query "http.Client construction httpclient New ScopeGuard"
+# Today: ports.HTTPClient, the httpclient adapter, ScopeGuard, and
+# runScan()/runAttack() in cmd/scanner/main.go -- the composition root, which
+# is the only place allowed to construct one. A core package appearing in that
+# answer is the violation.
+
+graphify affected "ScopeGuard"     # everything the boundary reaches
+```
+
+The graph is 710 nodes, 2094 edges, **11% `INFERRED`** — the highest ratio in
+the ecosystem, so verify before concluding. Rebuild with `graphify update .`
+after edits.
+
+**`/security-review` and `claude-security` need a caveat here.** This repository
+*is* attack code, deliberately, and `lab/` is a deliberately vulnerable service.
+A scanner run over either will produce findings that are the point of the file
+rather than defects in it. Reviewing this codebase means asking whether the
+scanner's own boundaries hold — scope, non-destructiveness, rate limiting,
+secrets from env — not whether it contains attack strings. It does. That is what
+it is for.
+
+**Superpowers' `systematic-debugging`** fits the failure this project actually
+produces: a check that reports a finding it cannot justify. Invariant 4 says
+compare against the baseline, invariant 6 says an inconclusive check returns
+`Skipped` — and a false positive is the two of those interacting, which is not
+something to guess at.
+
+**`/impeccable`, the animation skills and Playwright do not apply.** This is a
+CLI with no interface. The equivalent of an end-to-end check here is
+`cmd/scanner/pipeline_test.go`, which is the only place proving ScopeGuard,
+auth, the rate limiter, collection and a real check fit together.
