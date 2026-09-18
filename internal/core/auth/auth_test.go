@@ -552,3 +552,101 @@ func TestBodySnippet_TruncatesLongBody(t *testing.T) {
 		t.Errorf("bodySnippet() length = %d runes, want 201 (200 + ellipsis)", n)
 	}
 }
+
+// newCSRFGatedLoginServer simulates a login endpoint that rejects any
+// request lacking a header entirely — the shape a CSRF defense keyed on
+// "Authorization present or not" takes, independent of whether the value
+// is a real, currently-valid token (a request carrying it at all is
+// assumed to be a non-browser client and exempt from the check). The
+// scanner's own login attempt has no token yet, so without ExtraHeaders
+// it looks exactly like the browser-without-a-token case such a defense
+// exists to block.
+func newCSRFGatedLoginServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "" {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"error":"CSRF verification failed"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"token": "issued-token"})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestLogin_WithoutExtraHeaders_FailsAgainstACSRFGatedEndpoint is the
+// negative control for the next test: reproduces the failure
+// ExtraHeaders exists to fix, so the fix is proven against a case that
+// actually needed it.
+func TestLogin_WithoutExtraHeaders_FailsAgainstACSRFGatedEndpoint(t *testing.T) {
+	srv := newCSRFGatedLoginServer(t)
+	cfg := Config{LoginEndpoint: "/login", TokenPath: "token"}
+	a, err := New(srv.URL, cfg, http.DefaultClient)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := a.Authenticate(t.Context()); err == nil {
+		t.Fatal("Authenticate() = nil error, want one — the login endpoint requires a header this config never set")
+	}
+}
+
+// TestLogin_ExtraHeaders_SentOnLoginRequest proves ExtraHeaders is what
+// makes the difference: same server, only ExtraHeaders added.
+func TestLogin_ExtraHeaders_SentOnLoginRequest(t *testing.T) {
+	srv := newCSRFGatedLoginServer(t)
+	cfg := Config{
+		LoginEndpoint: "/login",
+		TokenPath:     "token",
+		ExtraHeaders:  map[string]string{"Authorization": "Bearer bootstrap"},
+	}
+	a, err := New(srv.URL, cfg, http.DefaultClient)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := a.Authenticate(t.Context()); err != nil {
+		t.Fatalf("Authenticate() unexpected error = %v", err)
+	}
+}
+
+// TestLogin_ExtraHeaders_NeverSentOnSubsequentRequests guards against a
+// broader bug than the one this feature fixes: ExtraHeaders must stay
+// scoped to the login request. Do's own header (TokenHeader, once a real
+// token exists) must be what every other request carries, never a value
+// still sitting in ExtraHeaders from login.
+func TestLogin_ExtraHeaders_NeverSentOnSubsequentRequests(t *testing.T) {
+	var gotAuth string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"token": "real-token"})
+	})
+	mux.HandleFunc("/protected", func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := Config{
+		LoginEndpoint: "/login",
+		TokenPath:     "token",
+		TokenHeader:   "Authorization",
+		TokenPrefix:   "Bearer ",
+		ExtraHeaders:  map[string]string{"Authorization": "Bearer bootstrap"},
+	}
+	a, err := New(srv.URL, cfg, http.DefaultClient)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if status := getProtected(t, a, srv); status != http.StatusOK {
+		t.Fatalf("getProtected() status = %d, want %d", status, http.StatusOK)
+	}
+	if want := "Bearer real-token"; gotAuth != want {
+		t.Errorf("Authorization on /protected = %q, want %q (ExtraHeaders' bootstrap value must not leak past login)", gotAuth, want)
+	}
+}

@@ -70,6 +70,17 @@ type Auth struct {
 	TokenPath     string      `yaml:"token_path"`
 	TokenHeader   string      `yaml:"token_header"`
 	TokenPrefix   string      `yaml:"token_prefix"`
+	// ExtraHeaders are set on the login request only, before any token
+	// exists — every other request already carries TokenHeader.
+	// Genuinely optional: it does not participate in anyFieldSet's
+	// all-or-nothing check, since a target with no such requirement
+	// needs nothing here at all. It exists for a login endpoint gated
+	// on a header being merely *present*, independent of the
+	// credential itself — a CSRF-on-unauthenticated-mutation defense
+	// double-submit tokens can't satisfy here, since the scanner has no
+	// cookie jar to carry the matching cookie half. Values may contain
+	// ${VAR} references, expanded the same way Credentials.Password is.
+	ExtraHeaders map[string]string `yaml:"extra_headers"`
 }
 
 // Configured reports whether an auth block was supplied. Validation
