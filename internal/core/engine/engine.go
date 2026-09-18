@@ -292,6 +292,16 @@ func (e *Engine) BuildJobs(targets []model.Target, checks []model.Check) []Job {
 	return jobs
 }
 
+// substitutedMethod reports whether the baseline was fetched with a method
+// other than the endpoint's own — which collection does for anything not
+// safe, so that a phase named "collect" cannot create or destroy anything.
+//
+// A missing baseline is not a substitution: that is a different gap, and
+// the check reports it with its own reason.
+func substitutedMethod(t model.Target) bool {
+	return t.Baseline != nil && t.Baseline.ProbedMethod != t.Endpoint.Method
+}
+
 // AbsentFromTarget reports whether the baseline shows this route does not
 // exist on the target at all — a spec that has drifted ahead of, or behind,
 // what is actually deployed.
@@ -378,6 +388,29 @@ func (e *Engine) runJob(ctx context.Context, job Job) (res Result) {
 				meta.Name, ep.Method, ep.Path, r)
 		}
 	}()
+
+	// A passive check works from the baseline alone, so it can only be
+	// pointed at a baseline that is actually this route's response. When
+	// collection had to substitute a safe method, it is not: on a server
+	// that routes strictly by method — most of them — what came back is the
+	// target's 405 handler, and on any server it is some other handler's
+	// answer. Judging it and filing the result under this route reports the
+	// wrong thing under the wrong name, and does it once per passive check
+	// per route, so one error page arrives as a stack of duplicate findings
+	// wearing other routes' names.
+	//
+	// Same reasoning as AbsentFromTarget applies to a 404: an error page is
+	// not the route's response. This is the other half of it.
+	//
+	// Active checks are unaffected. They send their own requests with the
+	// endpoint's own method and deliberately do not read the baseline's
+	// body — only its URL, for the target's scheme and host.
+	if meta.Kind == model.KindPassive && substitutedMethod(job.Target) {
+		res.Skipped = true
+		res.SkipReason = fmt.Sprintf("%s: baseline was collected with %s because %s is not a safe method, so this route's own response was never seen",
+			meta.Name, job.Target.Baseline.ProbedMethod, ep.Method)
+		return res
+	}
 
 	// A passive check is handed a client that refuses every request, so
 	// "passive checks don't hit the network" holds by construction rather

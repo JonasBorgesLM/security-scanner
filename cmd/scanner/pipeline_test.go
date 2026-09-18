@@ -1129,3 +1129,60 @@ func TestScan_RouteAbsentFromTargetCostsOneRequestAndIsReported(t *testing.T) {
 		t.Error("/present was reported as unexamined, but it was scanned")
 	}
 }
+
+// TestScan_PostRouteYieldsAnAdmissionNotDuplicateFindings measures the
+// change end to end against the spec the other pipeline tests use, which
+// carries POST /items alongside three safe routes.
+//
+// Before, that route contributed four missing-header findings derived from
+// the server's answer to a substituted GET — the same four the scanner
+// would report for any other POST route on the same server, since they all
+// share one error handler. They were never about POST /items.
+func TestScan_PostRouteYieldsAnAdmissionNotDuplicateFindings(t *testing.T) {
+	t.Setenv("SCANNER_IT_PASSWORD", "lab-pass")
+
+	srv, _ := newLabServer(t)
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "findings.json")
+
+	if err := runScan([]string{
+		"--spec", writeSpec(t, dir),
+		"--config", writeConfig(t, dir, srv.URL),
+		"--out", outPath,
+	}); err != nil {
+		t.Fatalf("runScan() error = %v", err)
+	}
+
+	var out model.FindingsFile
+	mustReadJSON(t, outPath, &out)
+
+	for _, f := range out.Findings {
+		if f.Endpoint.Method == http.MethodPost {
+			t.Errorf("finding %q is filed under %s %s, whose own response was never collected",
+				f.ID, f.Endpoint.Method, f.Endpoint.Path)
+		}
+	}
+
+	entry := findUnexamined(out.Coverage.Skipped, http.MethodPost, "/items")
+	if entry == nil {
+		t.Fatalf("POST /items is absent from coverage.skipped: %+v", out.Coverage.Skipped)
+	}
+	if entry.Check != "missing-headers" {
+		t.Errorf("check = %q, want the passive check that could not conclude", entry.Check)
+	}
+	if !strings.Contains(entry.Reason, "never seen") {
+		t.Errorf("reason = %q, want it to say the route's own response was never collected", entry.Reason)
+	}
+
+	// The safe routes must be unaffected: this rule exists to remove a
+	// misattribution, not to shrink the scan.
+	var onSafeRoutes int
+	for _, f := range out.Findings {
+		if f.Endpoint.Method == http.MethodGet {
+			onSafeRoutes++
+		}
+	}
+	if onSafeRoutes == 0 {
+		t.Error("no findings left on the GET routes; the rule silenced more than the substituted baselines")
+	}
+}
