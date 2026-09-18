@@ -78,3 +78,7 @@ checks:
     - exposed-secrets
     - sqli-boolean
     - xss-reflected
+    # Asks whether a route the spec declares as protected actually is. Only
+    # runs against those routes, and sends no body — see its doc comment for
+    # why that costs a verdict on some POST routes and is worth it.
+    - auth-required

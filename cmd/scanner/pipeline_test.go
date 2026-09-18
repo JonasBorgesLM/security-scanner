@@ -358,6 +358,17 @@ func TestShippedConfigEnablesOnlyRegisteredChecks(t *testing.T) {
 	if len(enabled) != len(cfg.Checks.Enabled) {
 		t.Errorf("resolved %d checks from %d names", len(enabled), len(cfg.Checks.Enabled))
 	}
+
+	// And the other direction, which is the one that fails silently: a check
+	// nobody enables is a check nobody runs. The example config is what most
+	// people copy, so a new check missing from it ships switched off and the
+	// only symptom is a report that never mentions it.
+	for _, name := range checks.Names() {
+		if !slices.Contains(cfg.Checks.Enabled, name) {
+			t.Errorf("check %q is registered but not enabled in configs/config.yaml; "+
+				"a check absent from the shipped example ships switched off", name)
+		}
+	}
 }
 
 // ---------------------------------------------------------------- attack

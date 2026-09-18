@@ -56,6 +56,7 @@ func severityClass(s string) string {
 // a versioned contract checks and the engine populate, and remediation copy
 // is presentation text that can be reworded without touching that contract.
 var recommendations = map[string]string{
+	"auth-required":   "Put this route behind the same authentication middleware the rest of the API uses, and verify the middleware runs BEFORE request validation — a route that answers 400 to an unauthenticated request has already let it past the control. Then re-scan: this check's oracle is the status code, so the fix is visible immediately.",
 	"missing-headers": "Set the missing security header(s) on every response, not just this route — a shared middleware is more reliable than per-handler headers. Verify with a fresh scan afterward.",
 	"exposed-secrets": "Rotate the exposed credential immediately, remove it from the response and from source, and load secrets from the environment or a secret manager instead of embedding or echoing them back to clients.",
 	"sqli-boolean":    "Use parameterized queries or an ORM's bound-parameter API for this input — never concatenate user input into SQL. Apply least-privilege database credentials so a successful injection can't read more than the application itself needs.",

@@ -374,14 +374,18 @@ func absInt(n int) int {
 // snippetOf renders a short, single-line excerpt of a response body for
 // evidence — collapsing whitespace so a formatted JSON body doesn't blow up
 // the line count of a reviewed findings.json.
-func snippetOf(body []byte) string {
+func snippetOf(body []byte) string { return snippetOfN(body, sqliSnippetLimit) }
+
+// snippetOfN is snippetOf with the limit chosen by the caller, for checks
+// whose evidence wants a different amount of the response.
+func snippetOfN(body []byte, limit int) string {
 	s := strings.Join(strings.Fields(string(body)), " ")
 	if s == "" {
 		return "<empty body>"
 	}
 	r := []rune(s)
-	if len(r) > sqliSnippetLimit {
-		return string(r[:sqliSnippetLimit]) + "…"
+	if len(r) > limit {
+		return string(r[:limit]) + "…"
 	}
 	return s
 }
