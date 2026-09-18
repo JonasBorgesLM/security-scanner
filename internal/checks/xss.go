@@ -120,7 +120,10 @@ func (c *xssReflected) Metadata() model.CheckMetadata {
 }
 
 func (c *xssReflected) Run(ctx context.Context, t model.Target, clients model.Clients) ([]model.Finding, error) {
-	params := injectableParameters(t.Endpoint)
+	params, heldBack := usableParameters(t)
+	if len(params) == 0 && heldBack > 0 {
+		return nil, heldBackByCreates(t.Endpoint, heldBack)
+	}
 	if len(params) == 0 {
 		// AppliesTo should already have kept this job from being created;
 		// staying correct here too costs nothing.
@@ -143,7 +146,7 @@ func (c *xssReflected) Run(ctx context.Context, t model.Target, clients model.Cl
 	// A parameter whose own clean baseline could not be fetched was never
 	// exercised; outcome reports that whether it happened to every
 	// parameter or only to some of them.
-	return res.outcome(t.Endpoint, params)
+	return res.outcome(t.Endpoint, params, heldBack)
 }
 
 // testParameter fetches one clean baseline for target (every parameter,

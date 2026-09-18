@@ -102,14 +102,25 @@ func runPerParameter(params []model.Parameter, test func(model.Parameter) (*mode
 // and a partial sweep is BOTH — findings to report and an admission to
 // make. model.Skippedf wraps the cause with %w so a caller can still reach
 // it with errors.Is.
-func (r perParameterResult) outcome(ep model.Endpoint, params []model.Parameter) ([]model.Finding, error) {
+func (r perParameterResult) outcome(ep model.Endpoint, params []model.Parameter, heldBack int) ([]model.Finding, error) {
+	gate := ""
+	if heldBack > 0 {
+		gate = fmt.Sprintf("; a further %d body parameter(s) were not probed at all because engine.test_creates is not set", heldBack)
+	}
+
 	switch {
+	case len(params) == 0 && heldBack > 0:
+		return nil, heldBackByCreates(ep, heldBack)
 	case len(r.untested) == len(params):
-		return nil, model.Skippedf("could not test any parameter of %s %s: %w",
-			ep.Method, ep.Path, r.lastErr)
+		return nil, model.Skippedf("could not test any parameter of %s %s%s: %w",
+			ep.Method, ep.Path, gate, r.lastErr)
 	case len(r.untested) > 0:
-		return r.findings, model.Skippedf("%d of %d parameter(s) of %s %s could not be tested (%s); the rest were: %w",
-			len(r.untested), len(params), ep.Method, ep.Path, strings.Join(r.untested, ", "), r.lastErr)
+		return r.findings, model.Skippedf("%d of %d parameter(s) of %s %s could not be tested (%s)%s; the rest were: %w",
+			len(r.untested), len(params), ep.Method, ep.Path, strings.Join(r.untested, ", "), gate, r.lastErr)
+	case heldBack > 0:
+		// Everything reachable was reached, but not everything was
+		// reachable. Findings stand; the gap is admitted alongside them.
+		return r.findings, heldBackByCreates(ep, heldBack)
 	default:
 		return r.findings, nil
 	}

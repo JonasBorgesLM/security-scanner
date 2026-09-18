@@ -339,6 +339,7 @@ func engineConfig(cfg *config.Config) engine.Config {
 		RequestsPerSecond: cfg.Engine.RequestsPerSecond,
 		Burst:             cfg.Engine.Burst,
 		TestDestructive:   cfg.Engine.TestDestructive,
+		TestCreates:       cfg.Engine.TestCreates,
 	}
 }
 

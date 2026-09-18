@@ -69,6 +69,10 @@ type Config struct {
 	// TestDestructive opts in to touching DELETE/PUT/PATCH endpoints at all,
 	// baseline collection included. Off by default.
 	TestDestructive bool
+	// TestCreates opts in to active checks sending a request body. Off by
+	// default, and stamped onto every Target as CanCreate so a check can
+	// say so rather than silently declining.
+	TestCreates bool
 }
 
 // Job is one check to run against one target — the unit the worker pool
@@ -197,7 +201,7 @@ func (e *Engine) Collect(ctx context.Context, endpoints []model.Endpoint) ([]mod
 var errIncomplete = errors.New("engine: run did not process every item")
 
 func (e *Engine) collectOne(ctx context.Context, ep model.Endpoint) model.Target {
-	target := model.Target{Endpoint: ep}
+	target := model.Target{Endpoint: ep, CanCreate: e.cfg.TestCreates}
 
 	method := baselineMethod(ep.Method)
 
