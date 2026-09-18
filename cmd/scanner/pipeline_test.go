@@ -251,10 +251,34 @@ func TestScan_EndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("severity is medium", func(t *testing.T) {
+	// The lab server writes a JSON-ish body without declaring a type, so
+	// net/http sniffs it to text/plain — data, not a document. That makes
+	// this the end-to-end exercise of the rule, not merely a place that
+	// tolerates it: a missing framing or script policy is a hardening gap
+	// here, and a real exposure on a page.
+	t.Run("severity follows what the response is", func(t *testing.T) {
+		want := map[string]string{
+			"Content-Security-Policy":   "low",
+			"X-Frame-Options":           "low",
+			"Strict-Transport-Security": "medium",
+			"X-Content-Type-Options":    "medium",
+		}
+		seen := map[string]bool{}
+
 		for _, f := range out.Findings {
-			if f.Severity != "medium" {
-				t.Errorf("%s: Severity = %q, want medium", f.ID, f.Severity)
+			for header, wantSeverity := range want {
+				if !strings.HasSuffix(f.ID, ":"+header) {
+					continue
+				}
+				seen[header] = true
+				if f.Severity != wantSeverity {
+					t.Errorf("%s: Severity = %q, want %q", f.ID, f.Severity, wantSeverity)
+				}
+			}
+		}
+		for header := range want {
+			if !seen[header] {
+				t.Errorf("no finding for %s; this assertion needs one of each to mean anything", header)
 			}
 		}
 	})

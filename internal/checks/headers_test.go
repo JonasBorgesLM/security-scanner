@@ -253,3 +253,103 @@ func TestSecurityHeaderTableIsWellFormed(t *testing.T) {
 		seen[h.name] = true
 	}
 }
+
+// headerTarget builds a Target whose baseline carries the given
+// Content-Type and none of the security headers.
+func headerTarget(contentType string) model.Target {
+	h := http.Header{}
+	if contentType != "" {
+		h.Set("Content-Type", contentType)
+	}
+	return model.Target{
+		Endpoint: model.Endpoint{Method: http.MethodGet, Path: "/items"},
+		Baseline: &model.Response{URL: "http://lab.test/items", StatusCode: 200, ProbedMethod: http.MethodGet, Headers: h},
+	}
+}
+
+func severityByHeader(t *testing.T, findings []model.Finding, err error) map[string]string {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	out := map[string]string{}
+	for _, f := range findings {
+		out[f.ID] = f.Severity
+	}
+	return out
+}
+
+// TestMissingHeaders_SeverityFollowsWhatTheResponseIs is the point of the
+// change. A missing framing or script policy is an exposure on a page and a
+// hardening gap on an API, and a report that grades them the same buries the
+// first under a pile of the second.
+//
+// It downgrades rather than suppresses on purpose: OWASP recommends all four
+// on API responses, and a check that stayed silent would make "no CSP
+// finding" mean either "it is set" or "we decided not to look" — the same
+// ambiguity the coverage block exists to prevent.
+func TestMissingHeaders_SeverityFollowsWhatTheResponseIs(t *testing.T) {
+	docFindings, docErr := runHeaders(t, headerTarget("text/html; charset=utf-8"))
+	document := severityByHeader(t, docFindings, docErr)
+	dataFindings, dataErr := runHeaders(t, headerTarget("application/json"))
+	data := severityByHeader(t, dataFindings, dataErr)
+
+	if len(document) != len(securityHeaders) || len(data) != len(securityHeaders) {
+		t.Fatalf("got %d document and %d data findings, want %d each — nothing may be suppressed",
+			len(document), len(data), len(securityHeaders))
+	}
+
+	for _, name := range []string{"Content-Security-Policy", "X-Frame-Options"} {
+		if document[name] != "" {
+			t.Errorf("%s on an HTML response has severity %q, want the check's own", name, document[name])
+		}
+		if data[name] != "low" {
+			t.Errorf("%s on a JSON response has severity %q, want low", name, data[name])
+		}
+	}
+
+	// Sniffing a JSON body into HTML is the exact attack nosniff prevents,
+	// and HSTS is about transport. Neither depends on what the body is.
+	for _, name := range []string{"X-Content-Type-Options", "Strict-Transport-Security"} {
+		if data[name] != "" {
+			t.Errorf("%s on a JSON response has severity %q, want it unchanged — it matters regardless of the body", name, data[name])
+		}
+	}
+}
+
+// TestMissingHeaders_ReasonExplainsTheDowngrade keeps the report useful: a
+// finding marked low without saying why reads as the scanner being unsure,
+// not as a judgement it made deliberately.
+func TestMissingHeaders_ReasonExplainsTheDowngrade(t *testing.T) {
+	findings, err := runHeaders(t, headerTarget("application/json"))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	for _, f := range findings {
+		if f.ID != "Content-Security-Policy" {
+			continue
+		}
+		if !strings.Contains(f.Evidence.ResponseSnippet, "data, not a document") {
+			t.Errorf("evidence = %q, want it to say why this is a lesser finding here", f.Evidence.ResponseSnippet)
+		}
+		return
+	}
+	t.Fatal("no Content-Security-Policy finding")
+}
+
+// TestMissingHeaders_UnclassifiableContentTypeIsTreatedAsADocument pins the
+// safe direction. Over-reporting a low-severity finding costs attention;
+// quietly demoting a real one costs the finding.
+func TestMissingHeaders_UnclassifiableContentTypeIsTreatedAsADocument(t *testing.T) {
+	for _, ct := range []string{"", "not a media type", "application/vnd.acme.thing+xml"} {
+		t.Run(ct, func(t *testing.T) {
+			f, err := runHeaders(t, headerTarget(ct))
+			got := severityByHeader(t, f, err)
+			if got["Content-Security-Policy"] != "" {
+				t.Errorf("severity = %q for Content-Type %q, want the check's own — an unclassifiable response must not be downgraded",
+					got["Content-Security-Policy"], ct)
+			}
+		})
+	}
+}
