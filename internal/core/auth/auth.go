@@ -57,9 +57,11 @@ type Config struct {
 	TokenPrefix   string // prepended to the token, e.g. "Bearer "
 	// ExtraHeaders are set on the login request only — every other
 	// request already carries TokenHeader once a token exists. Nil is
-	// the common case (no extra headers); it never overrides
-	// Content-Type, which login always sets to "application/json"
-	// itself.
+	// the common case (no extra headers).
+	//
+	// Content-Type is the one header this cannot set: login writes it
+	// after applying these, because the body it builds is JSON and no
+	// value here can change that.
 	ExtraHeaders map[string]string
 }
 
@@ -220,10 +222,16 @@ func (a *Authenticator) login(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("auth: build login request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	// ExtraHeaders first, Content-Type second, so Content-Type wins. The
+	// body above is JSON and nothing here can change that, so letting a
+	// config value relabel it would produce a request whose declared type
+	// contradicts what it actually carries — and the target would reject
+	// it for a reason that points nowhere near the config line that caused
+	// it.
 	for k, v := range a.cfg.ExtraHeaders {
 		req.Header.Set(k, v)
 	}
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := a.inner.Do(req)
 	if err != nil {

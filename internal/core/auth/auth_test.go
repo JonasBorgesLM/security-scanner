@@ -650,3 +650,77 @@ func TestLogin_ExtraHeaders_NeverSentOnSubsequentRequests(t *testing.T) {
 		t.Errorf("Authorization on /protected = %q, want %q (ExtraHeaders' bootstrap value must not leak past login)", gotAuth, want)
 	}
 }
+
+// TestLogin_ExtraHeaders_CannotOverrideContentType pins the one header
+// extra_headers must not be able to set. The login body is built by
+// json.Marshal and nothing in config can change that, so a config value
+// relabelling it would produce a request whose declared type contradicts
+// what it carries — and the target would reject it for a reason pointing
+// nowhere near the config line responsible.
+func TestLogin_ExtraHeaders_CannotOverrideContentType(t *testing.T) {
+	var gotContentType string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		gotContentType = r.Header.Get("Content-Type")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"token": "issued-token"})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := Config{
+		LoginEndpoint: "/login",
+		TokenPath:     "token",
+		ExtraHeaders: map[string]string{
+			"Content-Type":  "text/plain",
+			"X-Lab-Bootstr": "kept",
+		},
+	}
+	a, err := New(srv.URL, cfg, http.DefaultClient)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := a.Authenticate(t.Context()); err != nil {
+		t.Fatalf("Authenticate() unexpected error = %v", err)
+	}
+
+	if want := "application/json"; gotContentType != want {
+		t.Errorf("Content-Type on the login request = %q, want %q — extra_headers must not relabel a JSON body",
+			gotContentType, want)
+	}
+}
+
+// TestLogin_ExtraHeaders_OtherHeadersStillApply is the companion to the
+// test above: narrowing extra_headers away from Content-Type must not have
+// narrowed it away from everything else, which is the whole feature.
+func TestLogin_ExtraHeaders_OtherHeadersStillApply(t *testing.T) {
+	var gotBootstrap string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		gotBootstrap = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"token": "issued-token"})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cfg := Config{
+		LoginEndpoint: "/login",
+		TokenPath:     "token",
+		ExtraHeaders: map[string]string{
+			"Content-Type":  "text/plain",
+			"Authorization": "Bearer bootstrap",
+		},
+	}
+	a, err := New(srv.URL, cfg, http.DefaultClient)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := a.Authenticate(t.Context()); err != nil {
+		t.Fatalf("Authenticate() unexpected error = %v", err)
+	}
+
+	if want := "Bearer bootstrap"; gotBootstrap != want {
+		t.Errorf("Authorization on the login request = %q, want %q", gotBootstrap, want)
+	}
+}

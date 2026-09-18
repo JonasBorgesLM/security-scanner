@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"github.com/JonasBorgesLM/security-scanner/internal/envexpand"
 	"strings"
 	"testing"
 	"time"
@@ -280,5 +282,53 @@ func TestLoad_RequestTimeoutIsOptional(t *testing.T) {
 	}
 	if got, want := time.Duration(cfg.Engine.RequestTimeout), 20*time.Second; got != want {
 		t.Errorf("RequestTimeout = %v, want %v", got, want)
+	}
+}
+
+// TestLoad_AuthWithOnlyUsernameField and its extra_headers sibling close a
+// gap anyFieldSet had: both fields are governed by the auth block's
+// all-or-nothing rule but were not counted as evidence that the block was
+// meant to exist. A config with only one of them filled in — the shape a
+// typo'd key set leaves behind — read as "no auth block at all" and the
+// scan proceeded unauthenticated, producing a clean-looking report of
+// routes it was never allowed into.
+func TestLoad_AuthWithOnlyUsernameField(t *testing.T) {
+	_, err := Load("testdata/auth-only-username-field.yaml")
+	if err == nil {
+		t.Fatal("Load() error = nil, want a half-written auth block to be rejected")
+	}
+	for _, want := range []string{"auth.login_endpoint", "auth.token_path", "auth.credentials.username", "auth.credentials.password"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name the missing field %q", err, want)
+		}
+	}
+}
+
+func TestLoad_AuthWithOnlyExtraHeaders(t *testing.T) {
+	_, err := Load("testdata/auth-only-extra-headers.yaml")
+	if err == nil {
+		t.Fatal("Load() error = nil, want a half-written auth block to be rejected")
+	}
+	if !strings.Contains(err.Error(), "auth.login_endpoint") {
+		t.Errorf("error = %q, want it to name the missing fields", err)
+	}
+}
+
+// TestLoad_MissingEnvVarIsStillMatchableByType pins the contract that
+// survived expandTree changing shape: it now joins several errors instead
+// of returning one, and a caller must still be able to reach the
+// *MissingVarsError through errors.As to react to the specific names.
+func TestLoad_MissingEnvVarIsStillMatchableByType(t *testing.T) {
+	_, err := Load("testdata/missing-env-var.yaml")
+	if err == nil {
+		t.Fatal("Load() error = nil, want an error for an unset ${VAR}")
+	}
+
+	var missing *envexpand.MissingVarsError
+	if !errors.As(err, &missing) {
+		t.Fatalf("errors.As() = false for %v, want the MissingVarsError to stay reachable", err)
+	}
+	if len(missing.Names) == 0 {
+		t.Error("MissingVarsError.Names is empty, want the offending variable named")
 	}
 }

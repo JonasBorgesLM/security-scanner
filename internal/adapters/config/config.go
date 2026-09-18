@@ -72,9 +72,11 @@ type Auth struct {
 	TokenPrefix   string      `yaml:"token_prefix"`
 	// ExtraHeaders are set on the login request only, before any token
 	// exists — every other request already carries TokenHeader.
-	// Genuinely optional: it does not participate in anyFieldSet's
-	// all-or-nothing check, since a target with no such requirement
-	// needs nothing here at all. It exists for a login endpoint gated
+	// Genuinely optional: validateAuth never requires it, since a target
+	// with no such requirement needs nothing here at all. It does count
+	// towards anyFieldSet, though — filling in only this field is a
+	// half-written auth block, and reading it as "no auth block" would
+	// swallow the mistake instead of reporting it. It exists for a login endpoint gated
 	// on a header being merely *present*, independent of the
 	// credential itself — a CSRF-on-unauthenticated-mutation defense
 	// double-submit tokens can't satisfy here, since the scanner has no
@@ -101,7 +103,9 @@ func (a Auth) anyFieldSet() bool {
 		a.Credentials.Password != "" ||
 		a.TokenPath != "" ||
 		a.TokenHeader != "" ||
-		a.TokenPrefix != ""
+		a.TokenPrefix != "" ||
+		a.Credentials.UsernameField != "" ||
+		len(a.ExtraHeaders) > 0
 }
 
 // Engine tunes the worker pool + rate limiter that drive active checks.
@@ -196,6 +200,7 @@ func Load(path string) (*Config, error) {
 // syntax, not asking for a variable to be resolved.
 func expandTree(root *yaml.Node) error {
 	missing := make(map[string]bool)
+	var others []error
 
 	var walk func(*yaml.Node)
 	walk = func(n *yaml.Node) {
@@ -207,6 +212,15 @@ func expandTree(root *yaml.Node) error {
 					for _, name := range e.Names {
 						missing[name] = true
 					}
+				} else {
+					// Anything Expand may report in the future that is not a
+					// missing variable. Dropping it here would leave the node
+					// holding its literal "${VAR}" and let Load return
+					// success — sending the placeholder to the target as a
+					// credential, which is the one outcome invariant #7
+					// exists to forbid. Today Expand returns nothing else;
+					// this is the guard for the day it does.
+					others = append(others, err)
 				}
 				return
 			}
@@ -220,9 +234,9 @@ func expandTree(root *yaml.Node) error {
 	walk(root)
 
 	if len(missing) > 0 {
-		return &envexpand.MissingVarsError{Names: slices.Sorted(maps.Keys(missing))}
+		others = append(others, &envexpand.MissingVarsError{Names: slices.Sorted(maps.Keys(missing))})
 	}
-	return nil
+	return errors.Join(others...)
 }
 
 // validationErrors accumulates every problem found instead of failing on
