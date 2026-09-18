@@ -1,0 +1,18 @@
+# Only extra_headers is filled in — the shape a typo'd key set
+# leaves behind. It is a half-written auth block, not the absence of one, so
+# Load must reject it and name what is missing rather than scan
+# unauthenticated and report a clean-looking result.
+schema_version: 1
+target:
+  base_url: http://localhost:8080
+scope:
+  allowed_hosts: ["localhost:8080"]
+auth:
+  extra_headers:
+    Authorization: "Bearer bootstrap"
+engine:
+  max_concurrency: 5
+  requests_per_second: 10
+  timeout: 5m
+checks:
+  enabled: [missing-headers]
