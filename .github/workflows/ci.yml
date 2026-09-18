@@ -3,8 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
+  # Deliberately unfiltered, where push above is not. A pull request whose
+  # base is another feature branch — the shape stacked work takes when one
+  # change depends on another still in review — matched no trigger at all,
+  # so it reported no checks and still showed as mergeable. The gate was
+  # optional exactly where nobody looks.
+  #
+  # push stays pinned to main so the gate does not run twice on every
+  # feature branch: the pull_request event already covers those.
   pull_request:
-    branches: [main]
 
 jobs:
   quality-gate:
