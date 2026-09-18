@@ -377,6 +377,33 @@ diferentes, e essa divisão é o que ordena tudo abaixo:
 | **Propriedade da resposta** (status, header) | **Sim** — um 400 de validação ainda não é um 401 | `auth-required`, `missing-headers`, `cache-on-authenticated`, `cors` |
 | **Reflexão do payload** | **Não** — a validação rejeita a sonda antes de ela chegar a qualquer query | `sqli-boolean`, `xss-reflected` |
 
+### Medido, não argumentado
+
+A tabela acima era uma previsão quando foi escrita. Com o `auth-required`
+implementado (#21), ela virou uma medição — mesmo alvo, mesma execução, os
+cinco checks lado a lado:
+
+| Check | Oráculo | Vereditos | Skips |
+|---|---|---|---|
+| `auth-required` | status code | **15** | 1 |
+| `exposed-secrets` | corpo já coletado | 13 | 8 |
+| `missing-headers` | headers já coletados | 13 | 8 |
+| `sqli-boolean` | reflexão do payload | **0** | 8 |
+| `xss-reflected` | reflexão do payload | **0** | 8 |
+
+`auth-required` concluiu sobre **15 de 16** rotas que se aplicavam. Os dois
+checks de injeção concluíram sobre **zero** — recusados pela validação antes
+de alcançarem qualquer coisa, exatamente como o §3.3 previu.
+
+E os 15 vereditos não são silêncio: cada um é a afirmação de que uma rota que
+o spec declara protegida **de fato recusa** um request sem credencial,
+verificada mandando um. É o primeiro "limpo" que este scanner já mereceu.
+
+Um detalhe que custou menos do que eu temia: `POST /v1/auth/logout` e irmãs
+receberam veredito mesmo sem body, porque autenticação roda antes de
+validação — o 401 volta de qualquer jeito. A troca de "não mandar body"
+custou um veredito, não quinze.
+
 Duas consequências que o plano original não tinha como enxergar:
 
 1. **`auth-required` é imune ao modo de falha do #30**, então é o primeiro
