@@ -18,7 +18,7 @@ func xssCheck() *xssReflected {
 
 func runXSS(t *testing.T, target model.Target) ([]model.Finding, error) {
 	t.Helper()
-	return xssCheck().Run(t.Context(), target, http.DefaultClient)
+	return xssCheck().Run(t.Context(), target, model.Clients{Default: http.DefaultClient})
 }
 
 // ------------------------------------------------------------------ metadata

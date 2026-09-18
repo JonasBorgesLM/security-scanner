@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
 )
 
 // countingCheck records whether it was invoked, which is the point of every
@@ -22,7 +21,7 @@ var _ model.Check = (*countingCheck)(nil)
 
 func (c *countingCheck) Metadata() model.CheckMetadata { return c.meta }
 
-func (c *countingCheck) Run(context.Context, model.Target, ports.HTTPClient) ([]model.Finding, error) {
+func (c *countingCheck) Run(context.Context, model.Target, model.Clients) ([]model.Finding, error) {
 	c.runs++
 	return []model.Finding{{ID: "found"}}, nil
 }

@@ -170,7 +170,7 @@ func injectableParameters(ep model.Endpoint) []model.Parameter {
 	return out
 }
 
-func (c *sqliBoolean) Run(ctx context.Context, t model.Target, client ports.HTTPClient) ([]model.Finding, error) {
+func (c *sqliBoolean) Run(ctx context.Context, t model.Target, clients model.Clients) ([]model.Finding, error) {
 	params := injectableParameters(t.Endpoint)
 	if len(params) == 0 {
 		// AppliesTo should already have kept this job from being created;
@@ -188,7 +188,7 @@ func (c *sqliBoolean) Run(ctx context.Context, t model.Target, client ports.HTTP
 	origin := &url.URL{Scheme: base.Scheme, Host: base.Host}
 
 	res := runPerParameter(params, func(p model.Parameter) (*model.Finding, error) {
-		return c.testParameter(ctx, client, t.Endpoint, origin, params, p)
+		return c.testParameter(ctx, clients.Default, t.Endpoint, origin, params, p)
 	})
 
 	// A parameter that failed even the noise-measurement stage was never

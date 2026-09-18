@@ -65,7 +65,7 @@ func newCollectEngine(t *testing.T, client ports.HTTPClient, testDestructive boo
 		MaxConcurrency:    4,
 		RequestsPerSecond: 100000,
 		TestDestructive:   testDestructive,
-	}, client)
+	}, client, client)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -243,12 +243,18 @@ func TestRun_PassiveCheckIsDeniedTheNetwork(t *testing.T) {
 	var attemptErr error
 	passive := &stubCheck{
 		meta: model.CheckMetadata{Name: "nosy-passive", Kind: model.KindPassive},
-		run: func(ctx context.Context, target model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+		run: func(ctx context.Context, target model.Target, c model.Clients) ([]model.Finding, error) {
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://lab.invalid/sneaky", nil)
 			if err != nil {
 				return nil, err
 			}
-			_, attemptErr = c.Do(req)
+			// Both identities must refuse. A passive check reaching for
+			// Anonymous would be just as much a request as reaching for
+			// Default, and the second door was the new one.
+			_, attemptErr = c.Default.Do(req)
+			if _, err := c.Anonymous.Do(req); err == nil {
+				attemptErr = nil // force the assertion below to fail
+			}
 			return nil, nil
 		},
 	}
@@ -275,12 +281,12 @@ func TestRun_ActiveCheckKeepsTheNetwork(t *testing.T) {
 
 	active := &stubCheck{
 		meta: model.CheckMetadata{Name: "prober", Kind: model.KindActive},
-		run: func(ctx context.Context, target model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+		run: func(ctx context.Context, target model.Target, c model.Clients) ([]model.Finding, error) {
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://lab.invalid/probe", nil)
 			if err != nil {
 				return nil, err
 			}
-			resp, err := c.Do(req)
+			resp, err := c.Default.Do(req)
 			if err != nil {
 				return nil, err
 			}
@@ -320,7 +326,7 @@ func TestRun_ManyPassiveChecksShareOneCollectedResponse(t *testing.T) {
 	makeCheck := func(name string) model.Check {
 		return &stubCheck{
 			meta: model.CheckMetadata{Name: name, Kind: model.KindPassive},
-			run: func(ctx context.Context, target model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+			run: func(ctx context.Context, target model.Target, c model.Clients) ([]model.Finding, error) {
 				if target.Baseline == nil {
 					return nil, errors.New("no baseline")
 				}
@@ -375,7 +381,7 @@ func TestRun_CheckSeesBaselineError(t *testing.T) {
 	var sawErr bool
 	check := &stubCheck{
 		meta: model.CheckMetadata{Name: "careful", Kind: model.KindPassive},
-		run: func(ctx context.Context, target model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+		run: func(ctx context.Context, target model.Target, c model.Clients) ([]model.Finding, error) {
 			if target.Baseline == nil && target.BaselineErr != nil {
 				sawErr = true
 				// Cannot conclude anything: report nothing rather than guess.
@@ -534,7 +540,7 @@ func TestCollect_UnjoinableBaseURLBecomesBaselineErr(t *testing.T) {
 		BaseURL:           "http://lab.invalid/\x7f\x00",
 		MaxConcurrency:    2,
 		RequestsPerSecond: 100000,
-	}, &recordingClient{})
+	}, &recordingClient{}, &recordingClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

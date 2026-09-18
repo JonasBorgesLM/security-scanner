@@ -98,6 +98,33 @@ type CheckMetadata struct {
 	AppliesTo    func(Endpoint) bool
 }
 
+// Clients are the identities a check may send requests as.
+//
+// Until this existed a check was handed exactly one client, and the
+// Authenticator below it injected the token into everything — so a check
+// had no way to ask "what does this route do for someone who is not logged
+// in?". That question is the whole of auth-required, and half of idor.
+//
+// Both are wrapped by the SAME rate limiter, so acquiring a second identity
+// does not acquire a second request budget. Gentle by design is a property
+// of the target's experience, not of any one client.
+//
+// Default is what a check should use for everything that is not
+// specifically about identity. Reaching for Anonymous by habit would mean
+// scanning a protected route unauthenticated and reporting whatever the
+// login wall says, which is the misattribution invariant 5 exists to stop.
+type Clients struct {
+	// Default is the identity the scan runs as: authenticated when the
+	// config has an auth block, plain otherwise.
+	Default ports.HTTPClient
+	// Anonymous carries no credentials, ever. On a target with no auth
+	// configured it is the same client as Default — which is harmless,
+	// because a check that cares about identity only applies to endpoints
+	// the spec declares as protected, and those cannot exist without an
+	// auth block (cmd/scanner refuses that combination).
+	Anonymous ports.HTTPClient
+}
+
 // Check is implemented by every vulnerability check, self-registered into
 // the checks registry via init().
 //
@@ -108,11 +135,11 @@ type CheckMetadata struct {
 // one endpoint (a header name, say); the engine namespaces whatever it is
 // given.
 //
-// The client passed to Run is the rate-limited, scope-guarded one. A
-// passive check receives a client that refuses every request, so "passive
-// checks don't hit the network" is enforced rather than merely documented;
-// such a check must work from t.Baseline alone.
+// Every client in Clients is rate-limited and scope-guarded. A passive
+// check receives clients that refuse every request, so "passive checks
+// don't hit the network" is enforced rather than merely documented; such a
+// check must work from t.Baseline alone.
 type Check interface {
 	Metadata() CheckMetadata
-	Run(ctx context.Context, t Target, c ports.HTTPClient) ([]Finding, error)
+	Run(ctx context.Context, t Target, c Clients) ([]Finding, error)
 }

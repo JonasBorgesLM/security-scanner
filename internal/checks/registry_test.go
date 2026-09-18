@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
 )
 
 // fakeCheck is a minimal model.Check for exercising the registry.
@@ -18,7 +17,7 @@ var _ model.Check = (*fakeCheck)(nil)
 
 func (f *fakeCheck) Metadata() model.CheckMetadata { return f.meta }
 
-func (f *fakeCheck) Run(context.Context, model.Target, ports.HTTPClient) ([]model.Finding, error) {
+func (f *fakeCheck) Run(context.Context, model.Target, model.Clients) ([]model.Finding, error) {
 	return nil, nil
 }
 

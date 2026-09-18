@@ -119,7 +119,7 @@ func (c *xssReflected) Metadata() model.CheckMetadata {
 	}
 }
 
-func (c *xssReflected) Run(ctx context.Context, t model.Target, client ports.HTTPClient) ([]model.Finding, error) {
+func (c *xssReflected) Run(ctx context.Context, t model.Target, clients model.Clients) ([]model.Finding, error) {
 	params := injectableParameters(t.Endpoint)
 	if len(params) == 0 {
 		// AppliesTo should already have kept this job from being created;
@@ -137,7 +137,7 @@ func (c *xssReflected) Run(ctx context.Context, t model.Target, client ports.HTT
 	origin := &url.URL{Scheme: base.Scheme, Host: base.Host}
 
 	res := runPerParameter(params, func(p model.Parameter) (*model.Finding, error) {
-		return c.testParameter(ctx, client, t.Endpoint, origin, params, p)
+		return c.testParameter(ctx, clients.Default, t.Endpoint, origin, params, p)
 	})
 
 	// A parameter whose own clean baseline could not be fetched was never

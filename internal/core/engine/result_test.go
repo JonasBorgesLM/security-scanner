@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
 )
 
 // ------------------------------------------------------------------ skipping
@@ -16,7 +15,7 @@ import (
 func TestRun_SkippedCheckIsNeitherFindingNorFailure(t *testing.T) {
 	skipper := &stubCheck{
 		meta: model.CheckMetadata{Name: "cautious", Kind: model.KindPassive},
-		run: func(ctx context.Context, target model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+		run: func(ctx context.Context, target model.Target, c model.Clients) ([]model.Finding, error) {
 			return nil, model.Skippedf("no baseline for %s", target.Endpoint.Path)
 		},
 	}
@@ -49,7 +48,7 @@ func TestRun_SkippedCheckIsNeitherFindingNorFailure(t *testing.T) {
 func TestRun_OrdinaryErrorIsNotASkip(t *testing.T) {
 	failing := &stubCheck{
 		meta: model.CheckMetadata{Name: "broken", Kind: model.KindPassive},
-		run: func(context.Context, model.Target, ports.HTTPClient) ([]model.Finding, error) {
+		run: func(context.Context, model.Target, model.Clients) ([]model.Finding, error) {
 			return nil, errors.New("something went wrong")
 		},
 	}
@@ -77,7 +76,7 @@ func enrichingCheck(name string, n int) *stubCheck {
 			Severity:      "high",
 			OWASPCategory: "A05:2021-Security Misconfiguration",
 		},
-		run: func(ctx context.Context, target model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+		run: func(ctx context.Context, target model.Target, c model.Clients) ([]model.Finding, error) {
 			out := make([]model.Finding, n)
 			return out, nil
 		},
@@ -119,7 +118,7 @@ func TestRun_EngineStampsFindingsFromMetadata(t *testing.T) {
 func TestRun_CheckMaySetItsOwnSeverity(t *testing.T) {
 	override := &stubCheck{
 		meta: model.CheckMetadata{Name: "graded", Kind: model.KindPassive, Severity: "low"},
-		run: func(context.Context, model.Target, ports.HTTPClient) ([]model.Finding, error) {
+		run: func(context.Context, model.Target, model.Clients) ([]model.Finding, error) {
 			return []model.Finding{{Severity: "critical"}, {}}, nil
 		},
 	}
@@ -201,7 +200,7 @@ func TestFindingID_UsesTheChecksDiscriminatorWhenGiven(t *testing.T) {
 func TestBuildJobs_SkipsAuthOnlyChecksOnPublicEndpoints(t *testing.T) {
 	authOnly := &stubCheck{
 		meta: model.CheckMetadata{Name: "idor-ish", Kind: model.KindActive, RequiresAuth: true},
-		run: func(context.Context, model.Target, ports.HTTPClient) ([]model.Finding, error) {
+		run: func(context.Context, model.Target, model.Clients) ([]model.Finding, error) {
 			return nil, nil
 		},
 	}
@@ -269,7 +268,7 @@ func TestCollect_PanicDoesNotKillTheRun(t *testing.T) {
 func TestRun_SkipCarriesTheFindingsTheCheckDidProduce(t *testing.T) {
 	partial := &stubCheck{
 		meta: model.CheckMetadata{Name: "partial", Kind: model.KindPassive, Severity: "high"},
-		run: func(ctx context.Context, target model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+		run: func(ctx context.Context, target model.Target, c model.Clients) ([]model.Finding, error) {
 			return []model.Finding{{ID: "reachable"}},
 				model.Skippedf("1 of 2 parameter(s) of %s could not be tested", target.Endpoint.Path)
 		},

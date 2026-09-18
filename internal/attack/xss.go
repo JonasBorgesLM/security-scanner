@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
 )
 
 func init() {
@@ -32,7 +31,7 @@ var _ Confirmer = xssConfirmer{}
 
 func (xssConfirmer) CheckName() string { return "xss-reflected" }
 
-func (xssConfirmer) Confirm(ctx context.Context, f model.Finding, client ports.HTTPClient) (model.Finding, error) {
+func (xssConfirmer) Confirm(ctx context.Context, f model.Finding, clients model.Clients) (model.Finding, error) {
 	marker, err := freshMarker()
 	if err != nil {
 		return f, fmt.Errorf("generating a fresh marker: %w", err)
@@ -44,7 +43,7 @@ func (xssConfirmer) Confirm(ctx context.Context, f model.Finding, client ports.H
 		return f, fmt.Errorf("reconstructing the injection: %w", err)
 	}
 
-	res, err := get(ctx, client, f.Request.Method, testURL)
+	res, err := get(ctx, clients.Default, f.Request.Method, testURL)
 	if err != nil {
 		return f, fmt.Errorf("replaying with a fresh marker: %w", err)
 	}
