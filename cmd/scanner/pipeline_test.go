@@ -1023,3 +1023,109 @@ func findUnexamined(entries []model.Unexamined, method, path string) *model.Unex
 	}
 	return nil
 }
+
+// newDriftedLabServer answers /present normally and 404s /gone, the shape a
+// spec that has drifted ahead of its deployment leaves behind. It counts
+// requests per path so the test can assert what was NOT sent.
+func newDriftedLabServer(t *testing.T) (*httptest.Server, func(string) int) {
+	t.Helper()
+	var mu sync.Mutex
+	hits := map[string]int{}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"access_token": "tok-integration"},
+		})
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits[r.URL.Path]++
+		mu.Unlock()
+
+		if strings.HasPrefix(r.URL.Path, "/gone") {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"error":"not found"}`)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"ok":true}`)
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, func(path string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return hits[path]
+	}
+}
+
+func writeDriftedSpec(t *testing.T, dir string) string {
+	t.Helper()
+	spec := `openapi: 3.0.0
+info: {title: drifted, version: "1.0"}
+paths:
+  /present:
+    get:
+      responses: {"200": {description: ok}}
+      parameters:
+        - {name: q, in: query, schema: {type: string}}
+  /gone:
+    get:
+      responses: {"200": {description: ok}}
+      parameters:
+        - {name: q, in: query, schema: {type: string}}
+`
+	path := filepath.Join(dir, "openapi.yaml")
+	if err := os.WriteFile(path, []byte(spec), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
+}
+
+// TestScan_RouteAbsentFromTargetCostsOneRequestAndIsReported is the saving
+// and the admission, measured together.
+//
+// The live run this came from spent 109 of 278 requests on routes the
+// target does not serve, and reported none of it. Here /gone must cost
+// exactly one request — the baseline that discovered it is missing — while
+// /present is probed normally, and the report has to say which was which.
+func TestScan_RouteAbsentFromTargetCostsOneRequestAndIsReported(t *testing.T) {
+	t.Setenv("SCANNER_IT_PASSWORD", "lab-pass")
+
+	srv, hits := newDriftedLabServer(t)
+	dir := t.TempDir()
+	specPath := writeDriftedSpec(t, dir)
+
+	// sqli-boolean and xss-reflected both apply to a route with a query
+	// parameter, so an unfiltered /gone would absorb dozens of probes.
+	configPath := writeSQLiConfig(t, dir, srv.URL)
+
+	outPath := filepath.Join(dir, "findings.json")
+	if err := runScan([]string{"--spec", specPath, "--config", configPath, "--out", outPath}); err != nil {
+		t.Fatalf("runScan() error = %v", err)
+	}
+
+	if got := hits("/gone"); got != 1 {
+		t.Errorf("/gone received %d requests, want exactly 1 (the baseline that found it missing)", got)
+	}
+	if got := hits("/present"); got < 2 {
+		t.Errorf("/present received %d requests, want it probed normally", got)
+	}
+
+	var out model.FindingsFile
+	mustReadJSON(t, outPath, &out)
+
+	entry := findUnexamined(out.Coverage.Skipped, "GET", "/gone")
+	if entry == nil {
+		t.Fatalf("/gone is absent from coverage.skipped: %+v", out.Coverage.Skipped)
+	}
+	if !strings.Contains(entry.Reason, "absent from the target") {
+		t.Errorf("reason = %q, want it to say the route is not on the target", entry.Reason)
+	}
+	if findUnexamined(out.Coverage.Skipped, "GET", "/present") != nil {
+		t.Error("/present was reported as unexamined, but it was scanned")
+	}
+}

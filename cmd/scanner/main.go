@@ -183,7 +183,7 @@ func runScan(args []string) error {
 	}
 
 	findings, skipped, failed := summarise(results)
-	skipped = sortUnexamined(append(skipped, heldBackEndpoints(endpoints, cfg.Engine.TestDestructive)...))
+	skipped = sortUnexamined(append(skipped, heldBackEndpoints(targets, endpoints, cfg.Engine.TestDestructive)...))
 	failed = sortUnexamined(failed)
 
 	out := model.FindingsFile{
@@ -242,26 +242,42 @@ func summarise(results []engine.Result) (findings []model.Finding, skipped, fail
 }
 
 // heldBackEndpoints accounts for endpoints no check ever ran against,
-// because the non-destructive gate held them back before scheduling.
+// because something decided before scheduling that none should.
 //
-// The engine drops them silently — correctly, since that is its job — but
-// "the scanner deliberately did not look here" is exactly the kind of gap
-// the coverage block exists to make visible. Reported per endpoint, with no
-// check name, because the decision precedes any check.
-func heldBackEndpoints(endpoints []model.Endpoint, testDestructive bool) []model.Unexamined {
-	if testDestructive {
-		return nil
-	}
+// Two reasons reach it today: the non-destructive gate, and a route the
+// spec declares that the target does not actually serve. The engine drops
+// both silently — correctly, since that is its job — but "the scanner did
+// not look here" is exactly the kind of gap the coverage block exists to
+// make visible. Reported per endpoint, with no check name, because the
+// decision precedes any check.
+//
+// It takes the collected targets rather than the raw endpoints so absence
+// can be read off the baseline, and it asks engine.AbsentFromTarget rather
+// than re-deriving the rule — one definition, so the account and the
+// scheduling cannot come to different conclusions.
+func heldBackEndpoints(targets []model.Target, endpoints []model.Endpoint, testDestructive bool) []model.Unexamined {
 	var out []model.Unexamined
-	for _, ep := range endpoints {
-		if !ep.Destructive {
-			continue
+
+	if !testDestructive {
+		for _, ep := range endpoints {
+			if ep.Destructive {
+				out = append(out, model.Unexamined{
+					Method: ep.Method,
+					Path:   ep.Path,
+					Reason: "endpoint is destructive; engine.test_destructive is not set",
+				})
+			}
 		}
-		out = append(out, model.Unexamined{
-			Method: ep.Method,
-			Path:   ep.Path,
-			Reason: "endpoint is destructive; engine.test_destructive is not set",
-		})
+	}
+
+	for _, t := range targets {
+		if engine.AbsentFromTarget(t) {
+			out = append(out, model.Unexamined{
+				Method: t.Endpoint.Method,
+				Path:   t.Endpoint.Path,
+				Reason: engine.AbsentReason,
+			})
+		}
 	}
 	return out
 }

@@ -254,6 +254,11 @@ func (e *Engine) baselineRequest(ctx context.Context, ep model.Endpoint, method 
 // invariant, and one enforced in a single place is one refactor away from
 // being enforced nowhere.
 //
+// Routes AbsentFromTarget reports as missing are dropped here as well.
+// Dropping them produces no Result, and therefore no coverage entry — so
+// cmd/scanner accounts for them separately, from the same predicate, the
+// way it already does for endpoints the destructive gate held back.
+//
 // Checks are paired in name order so the resulting job list — and therefore
 // the scan's output — does not depend on the order the registry happened to
 // hand them over in. (Enabled already sorts; the engine does not know that,
@@ -269,6 +274,14 @@ func (e *Engine) BuildJobs(targets []model.Target, checks []model.Check) []Job {
 		if t.Endpoint.Destructive && !e.cfg.TestDestructive {
 			continue
 		}
+		// Nothing to learn from a route that is not there, and every probe
+		// aimed at one is traffic spent on nothing. Passive checks are
+		// dropped too: a 404 body is the target's error page, not this
+		// route's response, so judging its headers would describe the wrong
+		// thing (see the same reasoning for method substitution).
+		if AbsentFromTarget(t) {
+			continue
+		}
 		for _, c := range ordered {
 			if !applies(c.Metadata(), t.Endpoint) {
 				continue
@@ -278,6 +291,40 @@ func (e *Engine) BuildJobs(targets []model.Target, checks []model.Check) []Job {
 	}
 	return jobs
 }
+
+// AbsentFromTarget reports whether the baseline shows this route does not
+// exist on the target at all — a spec that has drifted ahead of, or behind,
+// what is actually deployed.
+//
+// The rule is deliberately narrow, because 404 is ambiguous and only one
+// reading of it is safe to act on:
+//
+//   - The endpoint must have been probed with its OWN method. A POST route
+//     probed with the substituted GET can answer 404 simply for having no
+//     GET handler, which says nothing about whether the route exists.
+//   - The path must carry no template parameters. Collection fills those
+//     with a placeholder, so "GET /items/1 → 404" usually means item 1 does
+//     not exist, not that /items/{id} does not.
+//
+// What it costs to be wrong runs in one direction on purpose. Declaring a
+// route absent when it is present loses coverage — and says so, as a skip
+// the report prints. Declaring it present when it is absent spends probes
+// on nothing and records the route as examined and clean. The first failure
+// is visible, the second is the one this project exists to stamp out, so
+// the rule errs towards the first.
+func AbsentFromTarget(t model.Target) bool {
+	if t.Baseline == nil || t.Baseline.StatusCode != http.StatusNotFound {
+		return false
+	}
+	if t.Baseline.ProbedMethod != t.Endpoint.Method {
+		return false
+	}
+	return !pathParam.MatchString(t.Endpoint.Path)
+}
+
+// AbsentReason is the explanation AbsentFromTarget's verdict carries into
+// the coverage block, kept next to the rule so the two cannot drift.
+const AbsentReason = "declared in the spec but absent from the target: the route answered 404 to its own method, with no path parameter that could explain it"
 
 // applies decides whether a check is meaningful for an endpoint.
 func applies(meta model.CheckMetadata, ep model.Endpoint) bool {
