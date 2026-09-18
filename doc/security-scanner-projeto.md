@@ -142,6 +142,38 @@ type Finding struct {
     Confirmed     bool
 }
 
+// Unexamined é o oposto de um Finding: a ausência de informação sobre uma
+// rota. Deliberadamente um tipo separado — misturá-lo entre os findings
+// faria "olhei e não achei" e "não consegui olhar" voltarem a ter a mesma
+// forma, que é exatamente o que ele existe para impedir.
+type Unexamined struct {
+    Check  string   // vazio quando a decisão precede qualquer check
+    Method string
+    Path   string
+    Reason string
+}
+
+// Coverage presta contas do que o estágio de fato conseguiu examinar.
+// Sem ele, um scan que não alcançou nada e um scan de alvo limpo produzem
+// o mesmo arquivo — uma lista de findings vazia — e toda decisão a jusante
+// erra na mesma direção.
+type Coverage struct {
+    EndpointsTotal int
+    ChecksRun      int
+    Skipped        []Unexamined
+    Failed         []Unexamined
+}
+
+// FindingsFile é o contrato em disco de scan e attack. Coverage viaja
+// junto dos findings, não num arquivo ao lado, para que os dois não possam
+// divergir e nenhum estágio receba findings sem a prestação de contas do
+// que os produziu.
+type FindingsFile struct {
+    SchemaVersion int        // 2 — a v1 não tinha Coverage e é recusada
+    Coverage      Coverage
+    Findings      []Finding
+}
+
 type CapturedRequest struct {
     Method  string
     URL     string
@@ -214,6 +246,14 @@ execução.
 | Regra | Motivo |
 |---|---|
 | `schema_version` precisa ser exatamente `1` | Mudança futura de formato falha alto, não é lida errado em silêncio |
+
+> **Nota (v2).** O `schema_version` dos arquivos de estágio (`findings.json`,
+> `confirmed.json`) subiu para `2` com o bloco `coverage`. Um arquivo v1 é
+> **recusado**, não lido com cobertura vazia: um arquivo escrito antes de o
+> scanner saber prestar contas do que falhou em examinar é indistinguível de
+> um em que nada falhou, e lê-lo como o segundo reintroduz em silêncio a
+> confusão que o bloco existe para encerrar. O `schema_version: 1` do
+> `config.yaml` é outro número, e não mudou.
 | `target.base_url` precisa ser URL absoluta | Sem host não há o que checar contra a allowlist |
 | `scope.allowed_hosts` não pode ser vazia, sem entradas em branco | É a fronteira de segurança |
 | **host do `target.base_url` ∈ `scope.allowed_hosts`** | Config incoerente faria o `ScopeGuard` bloquear o próprio alvo; falha na largada em vez de a cada request |

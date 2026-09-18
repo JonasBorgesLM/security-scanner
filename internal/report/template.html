@@ -149,6 +149,25 @@
     color: var(--muted);
   }
 
+  .coverage { margin: 1.5rem 0; }
+  .coverage h2 { font-size: .95rem; margin: 0 0 .5rem; }
+  .coverage p.lead { color: var(--muted); font-size: .85rem; margin: 0 0 .75rem; }
+  .coverage table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  .coverage th, .coverage td { text-align: left; vertical-align: top; padding: .4rem .6rem; border-bottom: 1px solid var(--border); }
+  .coverage th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+  .coverage tbody tr:last-child th, .coverage tbody tr:last-child td { border-bottom: 0; }
+
+  .caveat {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 4px solid var(--sev-medium, #b45309);
+    border-radius: 10px;
+    padding: 1rem 1.25rem;
+    margin: 1.5rem 0;
+  }
+  .caveat strong { display: block; margin-bottom: .25rem; }
+  .caveat p { margin: 0; color: var(--muted); font-size: .9rem; }
+
   footer { color: var(--muted); font-size: .8rem; border-top: 1px solid var(--border); padding-top: 1rem; }
 </style>
 </head>
@@ -158,6 +177,7 @@
   <header>
     <h1>Security Scan Report</h1>
     <p>{{.Summary.TotalFindings}} finding(s) &middot; {{.Summary.TotalConfirmed}} confirmed by proof-of-concept.</p>
+    <p>{{.Coverage.ChecksRun}} check(s) run over {{.Coverage.EndpointsTotal}} endpoint(s) &middot; {{len .Coverage.Skipped}} not examined &middot; {{len .Coverage.Failed}} failed.</p>
   </header>
 
   <section class="summary">
@@ -169,8 +189,18 @@
     {{end}}
   </section>
 
-  {{if not .Findings}}
-  <p class="empty">No findings.</p>
+  {{if and (not .Findings) (or .Coverage.Skipped .Coverage.Failed)}}
+  <div class="caveat">
+    <strong>No findings &mdash; but this is not a clean bill of health.</strong>
+    <p>
+      {{len .Coverage.Skipped}} route/check pair(s) could not be examined and
+      {{len .Coverage.Failed}} failed outright. An empty findings list means only
+      that nothing was found where the scanner actually looked. The table below
+      is where it did not.
+    </p>
+  </div>
+  {{else if not .Findings}}
+  <p class="empty">No findings, and nothing went unexamined.</p>
   {{else}}
   <section class="findings">
     {{range .Findings}}
@@ -216,6 +246,37 @@
       <div class="recommendation"><strong>Recommendation:</strong> {{.Recommendation}}</div>
     </article>
     {{end}}
+  </section>
+  {{end}}
+
+{{if or .Coverage.Skipped .Coverage.Failed}}
+  <section class="coverage">
+    <h2>Not examined</h2>
+    <p class="lead">
+      Every route and check the scanner could not draw a conclusion about.
+      Absence from this table is what makes absence from the findings above
+      mean something.
+    </p>
+    <table>
+      <tbody>
+      {{range .Coverage.Skipped}}
+      <tr>
+        <th>skipped</th>
+        <td class="mono">{{.Method}} {{.Path}}</td>
+        <td class="mono">{{if .Check}}{{.Check}}{{else}}&mdash;{{end}}</td>
+        <td>{{.Reason}}</td>
+      </tr>
+      {{end}}
+      {{range .Coverage.Failed}}
+      <tr>
+        <th>failed</th>
+        <td class="mono">{{.Method}} {{.Path}}</td>
+        <td class="mono">{{if .Check}}{{.Check}}{{else}}&mdash;{{end}}</td>
+        <td>{{.Reason}}</td>
+      </tr>
+      {{end}}
+      </tbody>
+    </table>
   </section>
   {{end}}
 

@@ -80,7 +80,7 @@ func exampleFindings() []model.Finding {
 }
 
 func TestBuild_SummarisesBySeverity(t *testing.T) {
-	data := Build(exampleFindings())
+	data := Build(exampleFindings(), model.Coverage{})
 
 	if data.Summary.TotalFindings != 4 {
 		t.Fatalf("TotalFindings = %d, want 4", data.Summary.TotalFindings)
@@ -110,7 +110,7 @@ func TestBuild_SummarisesBySeverity(t *testing.T) {
 }
 
 func TestBuild_OrdersMostSevereAndConfirmedFirst(t *testing.T) {
-	data := Build(exampleFindings())
+	data := Build(exampleFindings(), model.Coverage{})
 
 	if len(data.Findings) != 4 {
 		t.Fatalf("got %d findings, want 4", len(data.Findings))
@@ -132,7 +132,7 @@ func TestBuild_OrdersMostSevereAndConfirmedFirst(t *testing.T) {
 }
 
 func TestBuild_UnknownCheckGetsDefaultRecommendation(t *testing.T) {
-	data := Build([]model.Finding{{CheckName: "some-future-check", Severity: "low"}})
+	data := Build([]model.Finding{{CheckName: "some-future-check", Severity: "low"}}, model.Coverage{})
 	if data.Findings[0].Recommendation != defaultRecommendation {
 		t.Errorf("Recommendation = %q, want the default fallback", data.Findings[0].Recommendation)
 	}
@@ -142,7 +142,7 @@ func TestBuild_UnknownSeveritySortsLastAndGetsUnknownClass(t *testing.T) {
 	data := Build([]model.Finding{
 		{ID: "b", CheckName: "x", Severity: "low"},
 		{ID: "a", CheckName: "x", Severity: "totally-made-up"},
-	})
+	}, model.Coverage{})
 	if got := data.Findings[0].Severity; got != "low" {
 		t.Fatalf("Findings[0].Severity = %q, want low to sort before an unrecognised severity", got)
 	}
@@ -159,7 +159,7 @@ func TestBuild_TieBreaksOnCheckNameThenPathThenID(t *testing.T) {
 		{ID: "id-2", CheckName: "sqli-boolean", Endpoint: model.Endpoint{Path: "/b"}, Severity: "high"},
 		{ID: "id-1", CheckName: "sqli-boolean", Endpoint: model.Endpoint{Path: "/a"}, Severity: "high"},
 		{ID: "id-1", CheckName: "missing-headers", Endpoint: model.Endpoint{Path: "/a"}, Severity: "high"},
-	})
+	}, model.Coverage{})
 
 	got := []string{
 		data.Findings[0].CheckName + " " + data.Findings[0].Endpoint.Path,
@@ -175,8 +175,8 @@ func TestBuild_TieBreaksOnCheckNameThenPathThenID(t *testing.T) {
 }
 
 func TestBuild_IsDeterministic(t *testing.T) {
-	a := Build(exampleFindings())
-	b := Build(exampleFindings())
+	a := Build(exampleFindings(), model.Coverage{})
+	b := Build(exampleFindings(), model.Coverage{})
 
 	var bufA, bufB bytes.Buffer
 	if err := a.WriteJSON(&bufA); err != nil {
@@ -186,12 +186,12 @@ func TestBuild_IsDeterministic(t *testing.T) {
 		t.Fatalf("WriteJSON (b) error = %v", err)
 	}
 	if bufA.String() != bufB.String() {
-		t.Fatalf("two Build() calls over identical input produced different JSON")
+		t.Fatalf("two Build(, model.Coverage{}) calls over identical input produced different JSON")
 	}
 }
 
 func TestWriteHTML_GeneratesWithoutError(t *testing.T) {
-	data := Build(exampleFindings())
+	data := Build(exampleFindings(), model.Coverage{})
 
 	var buf bytes.Buffer
 	if err := data.WriteHTML(&buf); err != nil {
@@ -214,7 +214,7 @@ func TestWriteHTML_EscapesAttackerControlledContent(t *testing.T) {
 	// The xss-reflected finding's payload and evidence both contain a raw
 	// <script> tag. html/template must escape it — a report that executes
 	// the very payload it is reporting on would itself be an XSS sink.
-	data := Build(exampleFindings())
+	data := Build(exampleFindings(), model.Coverage{})
 
 	var buf bytes.Buffer
 	if err := data.WriteHTML(&buf); err != nil {
@@ -231,7 +231,7 @@ func TestWriteHTML_EscapesAttackerControlledContent(t *testing.T) {
 }
 
 func TestWriteHTML_EmptyFindingsStillRenders(t *testing.T) {
-	data := Build(nil)
+	data := Build(nil, model.Coverage{})
 
 	var buf bytes.Buffer
 	if err := data.WriteHTML(&buf); err != nil {
@@ -243,7 +243,7 @@ func TestWriteHTML_EmptyFindingsStillRenders(t *testing.T) {
 }
 
 func TestWriteJSON_RoundTripsSchema(t *testing.T) {
-	data := Build(exampleFindings())
+	data := Build(exampleFindings(), model.Coverage{})
 
 	var buf bytes.Buffer
 	if err := data.WriteJSON(&buf); err != nil {
@@ -267,5 +267,105 @@ func TestWriteJSON_RoundTripsSchema(t *testing.T) {
 	// HTML, not the original scan order.
 	if decoded.Findings[0].CheckName != "exposed-secrets" {
 		t.Errorf("Findings[0] = %s, want exposed-secrets first (critical)", decoded.Findings[0].CheckName)
+	}
+}
+
+// TestWriteHTML_EmptyFindingsWithCoverageDoesNotClaimClean is the report
+// half of the reason the coverage block exists. Before it, a scan that
+// reached nothing and a scan of a healthy target rendered the same page:
+// "No findings." The reader had no way to tell an earned clean bill of
+// health from an unearned one, and the unearned reading is the dangerous
+// one — so an empty findings list must say which it is.
+func TestWriteHTML_EmptyFindingsWithCoverageDoesNotClaimClean(t *testing.T) {
+	coverage := model.Coverage{
+		EndpointsTotal: 3,
+		ChecksRun:      2,
+		Skipped: []model.Unexamined{
+			{Check: "sqli-boolean", Method: "GET", Path: "/items", Reason: "auth failed after re-auth"},
+			{Method: "DELETE", Path: "/items/{id}", Reason: "endpoint is destructive; engine.test_destructive is not set"},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := Build(nil, coverage).WriteHTML(&buf); err != nil {
+		t.Fatalf("WriteHTML() error = %v", err)
+	}
+	html := buf.String()
+
+	if strings.Contains(html, "No findings, and nothing went unexamined") {
+		t.Error("report claims nothing went unexamined while coverage lists two entries")
+	}
+	for _, want := range []string{
+		"not a clean bill of health",
+		"sqli-boolean",
+		"auth failed after re-auth",
+		"/items/{id}",
+		"engine.test_destructive is not set",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("report does not mention %q", want)
+		}
+	}
+}
+
+// TestWriteHTML_EmptyFindingsAndEmptyCoverageMayClaimClean is the control
+// for the test above: when nothing went unexamined, the report is allowed
+// to say so plainly. A caveat on every empty report would be as useless as
+// none at all.
+func TestWriteHTML_EmptyFindingsAndEmptyCoverageMayClaimClean(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Build(nil, model.Coverage{EndpointsTotal: 3, ChecksRun: 6}).WriteHTML(&buf); err != nil {
+		t.Fatalf("WriteHTML() error = %v", err)
+	}
+	if html := buf.String(); !strings.Contains(html, "nothing went unexamined") {
+		t.Error("report with no findings and no gaps does not state the clean result plainly")
+	}
+}
+
+// TestWriteHTML_CoverageReasonIsInertText guards the same property the
+// findings already rely on: a reason string can carry whatever the target
+// put in an error message, and it must render as text, never as markup.
+func TestWriteHTML_CoverageReasonIsInertText(t *testing.T) {
+	coverage := model.Coverage{
+		Skipped: []model.Unexamined{
+			{Check: "x", Method: "GET", Path: "/p", Reason: `<script>alert(1)</script>`},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := Build(nil, coverage).WriteHTML(&buf); err != nil {
+		t.Fatalf("WriteHTML() error = %v", err)
+	}
+	if html := buf.String(); strings.Contains(html, "<script>alert(1)</script>") {
+		t.Error("a coverage reason rendered as live markup; it must be escaped like every other target-influenced string")
+	}
+}
+
+// TestWriteJSON_CarriesCoverage pins that report.json says the same thing
+// the HTML does — it is the machine-readable half of the same report, and
+// a gate reading it must see the gaps too.
+func TestWriteJSON_CarriesCoverage(t *testing.T) {
+	coverage := model.Coverage{
+		EndpointsTotal: 7,
+		ChecksRun:      11,
+		Failed:         []model.Unexamined{{Check: "xss-reflected", Method: "GET", Path: "/q", Reason: "connection refused"}},
+	}
+
+	var buf bytes.Buffer
+	if err := Build(nil, coverage).WriteJSON(&buf); err != nil {
+		t.Fatalf("WriteJSON() error = %v", err)
+	}
+
+	var got struct {
+		Coverage model.Coverage `json:"coverage"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if got.Coverage.EndpointsTotal != 7 || got.Coverage.ChecksRun != 11 {
+		t.Errorf("coverage counts = %+v, want 7 endpoints / 11 checks", got.Coverage)
+	}
+	if len(got.Coverage.Failed) != 1 || got.Coverage.Failed[0].Check != "xss-reflected" {
+		t.Errorf("coverage.failed = %+v, want the one failed check", got.Coverage.Failed)
 	}
 }
