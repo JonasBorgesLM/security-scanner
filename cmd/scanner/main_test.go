@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/adapters/config"
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
@@ -180,5 +181,42 @@ func TestWriteJSON_ErrorsOnUnwritableDirectory(t *testing.T) {
 
 	if err := writeJSON(path, model.FindingsFile{}); err == nil {
 		t.Fatal("writeJSON() error = nil, want an error for a missing directory")
+	}
+}
+
+// TestRequestTimeout_ResolvesConfigOrDefault pins the policy the
+// composition root owns: config.yaml decides when it says something, and
+// silence means the default rather than "no limit at all" — which is the
+// behaviour that let a single stalled route take a whole scan down.
+func TestRequestTimeout_ResolvesConfigOrDefault(t *testing.T) {
+	tests := []struct {
+		name string
+		set  time.Duration
+		want time.Duration
+	}{
+		{name: "unset falls back to the default", set: 0, want: defaultRequestTimeout},
+		{name: "configured value wins", set: 9 * time.Second, want: 9 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Engine.RequestTimeout = config.Duration(tt.set)
+
+			if got := requestTimeout(cfg); got != tt.want {
+				t.Errorf("requestTimeout() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRequestTimeout_DefaultIsShorterThanTheExampleRunTimeout guards the
+// relationship that makes the default useful at all: a per-request bound
+// longer than the run's own deadline can never fire. configs/config.yaml
+// ships engine.timeout: 5m.
+func TestRequestTimeout_DefaultIsShorterThanTheExampleRunTimeout(t *testing.T) {
+	if defaultRequestTimeout >= 5*time.Minute {
+		t.Errorf("defaultRequestTimeout = %v, want well under the 5m run timeout configs/config.yaml ships",
+			defaultRequestTimeout)
 	}
 }

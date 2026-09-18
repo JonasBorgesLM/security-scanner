@@ -6,6 +6,7 @@ package httpclient
 import (
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/core/scope"
 	"github.com/JonasBorgesLM/security-scanner/internal/ports"
@@ -25,13 +26,28 @@ type Client struct {
 // New builds a Client. guard must not be nil — it is the whole point of
 // this adapter. If httpClient is nil, a plain *http.Client is used.
 //
+// timeout bounds each individual request: connection, redirects and
+// reading the response body, all of it. It is a separate parameter rather
+// than something the caller sets on httpClient because forgetting it is
+// not a visible mistake — without one, the only limit is the whole run's
+// context, so a target that accepts a connection and never answers pins a
+// worker until the global deadline fires and takes the entire scan down
+// with it. A parameter at least shows up at every call site.
+//
+// A timeout of zero or less means no per-request limit. That is the
+// pre-existing behaviour, kept reachable for tests that need a request to
+// outlive a deliberate stall; config.validateEngine rejects a negative
+// value, and cmd/scanner supplies a default, so no real scan runs without
+// one.
+//
 // A supplied httpClient is never mutated in place — New works on a shallow
-// copy — for two reasons: mutating http.DefaultClient itself would leak a
+// copy — for three reasons: mutating http.DefaultClient itself would leak a
 // redirect policy into any other code in the process that happens to use
-// it, and mutating a caller-supplied *http.Client shared across multiple
+// it, mutating a caller-supplied *http.Client shared across multiple
 // New calls (each with its own ScopeGuard) would let the later call's
-// CheckRedirect silently overwrite the earlier one's.
-func New(guard *scope.ScopeGuard, httpClient *http.Client) *Client {
+// CheckRedirect silently overwrite the earlier one's, and the same applies
+// to the Timeout set below.
+func New(guard *scope.ScopeGuard, httpClient *http.Client, timeout time.Duration) *Client {
 	if guard == nil {
 		panic("httpclient: guard must not be nil")
 	}
@@ -40,6 +56,10 @@ func New(guard *scope.ScopeGuard, httpClient *http.Client) *Client {
 	} else {
 		clone := *httpClient
 		httpClient = &clone
+	}
+
+	if timeout > 0 {
+		httpClient.Timeout = timeout
 	}
 
 	// net/http.Client.Do follows redirects internally, dialing each hop

@@ -99,8 +99,14 @@ type Engine struct {
 	RequestsPerSecond float64 `yaml:"requests_per_second"`
 	// Burst is how many requests may go out at once before the sustained
 	// rate applies. Optional; the engine defaults it to 1 (strictly paced).
-	Burst           int      `yaml:"burst"`
-	Timeout         Duration `yaml:"timeout"`
+	Burst   int      `yaml:"burst"`
+	Timeout Duration `yaml:"timeout"`
+	// RequestTimeout bounds one request, where Timeout bounds the whole
+	// run. Without it the two are the same number, so a handful of routes
+	// that accept a connection and never answer hold every worker until
+	// the global deadline fires — and the run is then discarded as
+	// incomplete. Optional; cmd/scanner supplies a default when unset.
+	RequestTimeout  Duration `yaml:"request_timeout"`
 	TestDestructive bool     `yaml:"test_destructive"`
 }
 
@@ -315,6 +321,15 @@ func (c *Config) validateEngine(errs *validationErrors) {
 	}
 	if time.Duration(c.Engine.Timeout) <= 0 {
 		errs.add("engine.timeout is required and must be greater than 0")
+	}
+	// Optional, so zero is "use the default" rather than an error — but a
+	// negative value is a typo that would otherwise disable the per-request
+	// bound silently, which is the whole failure this field exists to stop.
+	if time.Duration(c.Engine.RequestTimeout) < 0 {
+		errs.add("engine.request_timeout must not be negative")
+	}
+	if rt, total := time.Duration(c.Engine.RequestTimeout), time.Duration(c.Engine.Timeout); rt > 0 && total > 0 && rt > total {
+		errs.add("engine.request_timeout (%s) is longer than engine.timeout (%s), so it could never fire", rt, total)
 	}
 }
 

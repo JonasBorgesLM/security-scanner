@@ -52,6 +52,12 @@ engine:
   requests_per_second: 10
   # Global deadline for the whole run (Go duration: 30s, 5m, 1h...).
   timeout: 5m
+  # Optional. Bounds ONE request, where timeout above bounds the whole run.
+  # Without it the two are the same number, so a handful of routes that
+  # accept a connection and never answer hold every worker until the global
+  # deadline fires — and the run is then thrown away as incomplete.
+  # Defaults to 30s when unset. Must not exceed timeout.
+  # request_timeout: 30s
   # DELETE/PUT/PATCH endpoints are skipped unless this is true.
   # Leave it false unless you can restore the lab's state afterwards.
   test_destructive: false

@@ -32,6 +32,26 @@ import (
 	"github.com/JonasBorgesLM/security-scanner/internal/report"
 )
 
+// defaultRequestTimeout bounds one request when config.yaml does not say.
+// Policy lives here rather than in the config package because cmd/scanner
+// is the composition root — the place this project already puts the
+// decisions about which concrete behaviour the core runs against.
+//
+// Thirty seconds is chosen to be far longer than any healthy response from
+// a lab target and far shorter than a typical engine.timeout, so it fires
+// only on a route that is genuinely stuck.
+const defaultRequestTimeout = 30 * time.Second
+
+// requestTimeout resolves the per-request bound: what config.yaml asked
+// for, or the default when it said nothing. Validation already rejected a
+// negative value.
+func requestTimeout(cfg *config.Config) time.Duration {
+	if d := time.Duration(cfg.Engine.RequestTimeout); d > 0 {
+		return d
+	}
+	return defaultRequestTimeout
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -112,7 +132,7 @@ func runScan(args []string) error {
 	// including the Authenticator's own login request — goes through this
 	// one client, so no code path can bypass the allowlist.
 	guard := scope.NewScopeGuard(cfg.Scope.AllowedHosts)
-	client := httpclient.New(guard, nil)
+	client := httpclient.New(guard, nil, requestTimeout(cfg))
 
 	// Resolve the enabled checks before spending a single request: a typo in
 	// checks.enabled should fail immediately, not after a full collection.
@@ -254,7 +274,7 @@ func runAttack(args []string) error {
 	// Same boundary as scan: the ScopeGuard-wrapped client is the only path
 	// to the network, for a Confirmer exactly as much as for a check.
 	guard := scope.NewScopeGuard(cfg.Scope.AllowedHosts)
-	client := httpclient.New(guard, nil)
+	client := httpclient.New(guard, nil, requestTimeout(cfg))
 
 	// Only wire in auth when a finding sits on a protected route — same
 	// optional-auth rule as scan. A findings.json full of public routes needs
