@@ -2,6 +2,7 @@ package checks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -112,4 +113,35 @@ func (r perParameterResult) outcome(ep model.Endpoint, params []model.Parameter)
 	default:
 		return r.findings, nil
 	}
+}
+
+// ErrNotExercised marks a parameter whose probes never reached the code
+// path being tested, so nothing can be concluded about it — least of all
+// that it is clean.
+//
+// Two shapes reach it, and the live run against a real API produced both:
+//
+//   - The target rejected the benign filler too. A parameter declared as an
+//     enum, an integer or a uuid answers 400 to "1" exactly as it answers
+//     400 to "' OR '1'='1", so the noise floor gets measured over error
+//     pages and the two payloads are then compared as error pages. The
+//     difference is zero and the route reads as clean.
+//   - No probe could be sent at all.
+//
+// The distinction that matters, and the reason this is not simply "4xx
+// means skip": a benign value that succeeds while the payload is rejected
+// is the opposite result — that is input validation working, and the
+// parameter WAS exercised.
+var ErrNotExercised = errors.New("checks: parameter was never exercised")
+
+// rejected reports whether a response status means the request never
+// reached the behaviour under test. 4xx is the target refusing the request;
+// 5xx means it broke before answering. Neither is a response to compare.
+func rejected(status int) bool { return status >= 400 }
+
+// notExercisedf builds an ErrNotExercised-wrapping explanation. Callers
+// hand it to runPerParameter, which records the parameter as untested — so
+// it reaches the coverage block as an admission rather than vanishing.
+func notExercisedf(format string, args ...any) error {
+	return fmt.Errorf("%w: "+format, append([]any{ErrNotExercised}, args...)...)
 }
