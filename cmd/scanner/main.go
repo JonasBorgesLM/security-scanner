@@ -218,23 +218,24 @@ func runScan(args []string) error {
 func summarise(results []engine.Result) (findings []model.Finding, skipped, failed []model.Unexamined) {
 	findings = []model.Finding{}
 	for _, r := range results {
+		// Findings and an admission are not alternatives. A check that
+		// examined three parameters and could not reach a fourth produces
+		// both, and a switch that picked one would either lose a real
+		// finding or let a partly-examined route read as a whole one.
+		findings = append(findings, r.Findings...)
+
+		entry := model.Unexamined{
+			Check:  r.CheckName,
+			Method: r.Endpoint.Method,
+			Path:   r.Endpoint.Path,
+		}
 		switch {
 		case r.Skipped:
-			skipped = append(skipped, model.Unexamined{
-				Check:  r.CheckName,
-				Method: r.Endpoint.Method,
-				Path:   r.Endpoint.Path,
-				Reason: r.SkipReason,
-			})
+			entry.Reason = r.SkipReason
+			skipped = append(skipped, entry)
 		case r.Err != nil:
-			failed = append(failed, model.Unexamined{
-				Check:  r.CheckName,
-				Method: r.Endpoint.Method,
-				Path:   r.Endpoint.Path,
-				Reason: r.Err.Error(),
-			})
-		default:
-			findings = append(findings, r.Findings...)
+			entry.Reason = r.Err.Error()
+			failed = append(failed, entry)
 		}
 	}
 	return findings, skipped, failed

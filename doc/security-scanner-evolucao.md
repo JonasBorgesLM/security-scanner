@@ -109,7 +109,7 @@ O que segue é o que não está bem.
 | 2 | HIGH | "Byte-idêntico" só vale contra alvo estático | `checks/sqli.go:263-266`; `checks/xss.go` (`BaselineResponse`) | #13 |
 | 3 | MEDIUM | Checks ativos limpam rotas POST que nunca exercitaram | `checks/sqli.go:322-356` (body `nil`), `sqli.go:163-171` | #28 |
 | 4 | MEDIUM | Nenhum timeout por request | `adapters/httpclient/httpclient.go:38-39` | #15 |
-| 5 | MEDIUM | Falha de auth vira `failed`, não `skipped` | ausência de `ErrReAuthFailed` em `internal/checks/` | #16 |
+| 5 | MEDIUM | ~~Falha de auth vira `failed`, não `skipped`~~ → **corrigido:** falha de auth *parcial* é descartada em silêncio | `checks/sqli.go`, `checks/xss.go`: `lastErr` descartado quando `tested > 0` | #16 |
 | 6 | LOW | `ExtraHeaders` pode sobrescrever `Content-Type`, contra o próprio doc | `core/auth/auth.go:223-226` vs `auth.go:58-63` | #17 |
 | 7 | LOW | `anyFieldSet` ignora `username_field` e `extra_headers` | `adapters/config/config.go:97-105` | #17 |
 | 8 | LOW | `expandTree` engole erro que não seja `MissingVarsError` | `adapters/config/config.go:197-207` | #17 |
@@ -150,6 +150,36 @@ O achado 3 também foi confirmado por teste (reprodutor em #28): 15 sondas
 gastas contra uma rota POST que exige body, todas rejeitadas com 400, zero
 alcançando o caminho vulnerável, e `Run` devolvendo `(nil, nil)` — nem finding
 nem skip.
+
+### 3.1.1 Correção ao achado 5
+
+O achado 5 foi enunciado errado e a correção fica registrada aqui, porque um
+documento que só guarda a conclusão certa não ensina a desconfiar da errada.
+
+**O que eu afirmei:** nenhum check mapeia `auth.ErrReAuthFailed` para
+`model.Skippedf`, logo auth quebrado cai em `Result.Err`.
+
+**O que a medição mostrou:** falha *total* de auth já vira `Skipped`, por dois
+caminhos que a leitura não seguiu até o fim — `tested == 0` em `sqli`/`xss`, e
+baseline nil quando a coleta falha. `errors.Is(err, model.ErrSkipped)` é
+`true` nos três casos testados. **A invariante 6 estava de pé.**
+
+**O defeito real, que só a medição achou:** o caso *parcial*. Com dois
+parâmetros, um servindo e outro com auth quebrado:
+
+```
+findings=0  err=<nil>
+requests servidos=18  recusados=6
+```
+
+Seis sondas recusadas, e `Run` devolve `(nil, nil)`. `lastErr` é preenchido e
+descartado sempre que `tested > 0`. A rota consta **examinada e limpa** — o
+mesmo modo de falha do achado 3 por outra porta.
+
+A lição de método é a mesma do §3.3: leitura de código gera hipótese, não
+achado. Esta ficou uma etapa inteira no documento com o enunciado invertido.
+
+---
 
 ### 3.2 Limite que o ScopeGuard não cobre
 

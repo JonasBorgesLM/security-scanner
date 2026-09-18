@@ -29,6 +29,11 @@ var ErrSkipped = errors.New("check skipped")
 
 // Skippedf builds an ErrSkipped-wrapping error explaining why a check could
 // not conclude. Callers test for it with errors.Is(err, ErrSkipped).
+//
+// Format an underlying cause with %w, not %v. The reason reaches the
+// coverage block as text either way, but only %w keeps the cause reachable
+// by errors.Is — which is what lets a caller tell "auth is broken" from
+// "there was no baseline" without parsing an error message.
 func Skippedf(format string, args ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{ErrSkipped}, args...)...)
 }

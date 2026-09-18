@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"strings"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
 	"github.com/JonasBorgesLM/security-scanner/internal/ports"
@@ -53,4 +54,62 @@ func sendProbe(
 	}
 
 	return &probeResult{url: req.URL.String(), status: resp.StatusCode, body: body}, nil
+}
+
+// perParameterResult is the outcome of sweeping one check across an
+// endpoint's injectable parameters.
+type perParameterResult struct {
+	findings []model.Finding
+	// untested names the parameters no probe could be completed against —
+	// a refused connection, broken auth, a URL that would not build. They
+	// are the difference between "this route is clean" and "this much of
+	// the route is clean".
+	untested []string
+	lastErr  error
+}
+
+// runPerParameter applies test to every parameter and keeps account of the
+// ones it could not reach.
+//
+// It exists because both active checks were making the same bookkeeping
+// mistake in the same place: each collected a lastErr per parameter and
+// then threw it away whenever at least one other parameter had worked, so
+// an endpoint where three parameters tested fine and a fourth refused every
+// probe was reported as examined and clean. The shape is shared; more to
+// the point, the correctness property is — a new active check should not
+// have to rediscover that an untested parameter has to be admitted.
+func runPerParameter(params []model.Parameter, test func(model.Parameter) (*model.Finding, error)) perParameterResult {
+	var res perParameterResult
+	for _, p := range params {
+		f, err := test(p)
+		if err != nil {
+			res.untested = append(res.untested, p.Name)
+			res.lastErr = err
+			continue
+		}
+		if f != nil {
+			res.findings = append(res.findings, *f)
+		}
+	}
+	return res
+}
+
+// outcome turns the sweep into what a Check must return.
+//
+// Three cases, and the middle one is the reason this function exists:
+// nothing testable is a plain skip, everything testable is a plain result,
+// and a partial sweep is BOTH — findings to report and an admission to
+// make. model.Skippedf wraps the cause with %w so a caller can still reach
+// it with errors.Is.
+func (r perParameterResult) outcome(ep model.Endpoint, params []model.Parameter) ([]model.Finding, error) {
+	switch {
+	case len(r.untested) == len(params):
+		return nil, model.Skippedf("could not test any parameter of %s %s: %w",
+			ep.Method, ep.Path, r.lastErr)
+	case len(r.untested) > 0:
+		return r.findings, model.Skippedf("%d of %d parameter(s) of %s %s could not be tested (%s); the rest were: %w",
+			len(r.untested), len(params), ep.Method, ep.Path, strings.Join(r.untested, ", "), r.lastErr)
+	default:
+		return r.findings, nil
+	}
 }
