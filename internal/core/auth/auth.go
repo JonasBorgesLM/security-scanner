@@ -55,6 +55,12 @@ type Config struct {
 	TokenPath     string // dot-notation path into the JSON login response, e.g. "data.access_token"
 	TokenHeader   string // header the token is injected into; defaults to "Authorization"
 	TokenPrefix   string // prepended to the token, e.g. "Bearer "
+	// ExtraHeaders are set on the login request only — every other
+	// request already carries TokenHeader once a token exists. Nil is
+	// the common case (no extra headers); it never overrides
+	// Content-Type, which login always sets to "application/json"
+	// itself.
+	ExtraHeaders map[string]string
 }
 
 // Authenticator wraps a ports.HTTPClient, logging in on first use and
@@ -215,6 +221,9 @@ func (a *Authenticator) login(ctx context.Context) error {
 		return fmt.Errorf("auth: build login request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	for k, v := range a.cfg.ExtraHeaders {
+		req.Header.Set(k, v)
+	}
 
 	resp, err := a.inner.Do(req)
 	if err != nil {

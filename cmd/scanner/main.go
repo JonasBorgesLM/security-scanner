@@ -452,9 +452,10 @@ func authConfig(cfg *config.Config) auth.Config {
 			Password:      cfg.Auth.Credentials.Password,
 			UsernameField: cfg.Auth.Credentials.UsernameField,
 		},
-		TokenPath:   cfg.Auth.TokenPath,
-		TokenHeader: cfg.Auth.TokenHeader,
-		TokenPrefix: cfg.Auth.TokenPrefix,
+		TokenPath:    cfg.Auth.TokenPath,
+		TokenHeader:  cfg.Auth.TokenHeader,
+		ExtraHeaders: cfg.Auth.ExtraHeaders,
+		TokenPrefix:  cfg.Auth.TokenPrefix,
 	}
 }
 

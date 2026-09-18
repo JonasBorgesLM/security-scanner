@@ -44,6 +44,13 @@ auth:
   token_path: data.access_token
   token_header: Authorization
   token_prefix: "Bearer "
+  # Optional. Set only on the login request itself, before any token
+  # exists. Useful against a target whose CSRF defense is keyed on
+  # "Authorization present or not" rather than on the credential's real
+  # value — the scanner's own login attempt otherwise looks identical to
+  # an unauthenticated browser request such a defense exists to block.
+  # extra_headers:
+  #   Authorization: "Bearer bootstrap"
 
 engine:
   # Worker pool size and rate limit — keep these gentle; the point is to
