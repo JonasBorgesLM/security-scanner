@@ -211,11 +211,22 @@ func (c *sqliBoolean) testParameter(
 	all []model.Parameter,
 	target model.Parameter,
 ) (*model.Finding, error) {
-	noise, sample, err := c.measureNoise(ctx, client, ep, origin, all, target)
+	noise, sample, status, err := c.measureNoise(ctx, client, ep, origin, all, target)
 	if err != nil {
 		return nil, fmt.Errorf("measuring baseline noise for %q: %w", target.Name, err)
 	}
+	// The benign filler was refused, so every payload below would be
+	// refused the same way and the comparison would be between two error
+	// pages. Measured against a real API, this is the common case, not the
+	// edge one: a parameter declared as an enum or an integer answers 400
+	// to "1" exactly as it answers 400 to an injection.
+	if rejected(status) {
+		return nil, notExercisedf(
+			"%q answered %d to the benign value %q, so an injected value could not reach any query either",
+			target.Name, status, sqliProbeFiller)
+	}
 
+	sent := 0
 	for _, pair := range c.pairs {
 		trueResp, err := sendProbe(ctx, client, "sqli", ep, origin, all, target, pair.truePayload)
 		if err != nil {
@@ -225,6 +236,7 @@ func (c *sqliBoolean) testParameter(
 		if err != nil {
 			continue
 		}
+		sent++
 
 		diff := absInt(len(trueResp.body) - len(falseResp.body))
 		if diff <= noise {
@@ -259,13 +271,23 @@ func (c *sqliBoolean) testParameter(
 			},
 		}, nil
 	}
+
+	// Every pair failed to send. The loop above skips a pair it could not
+	// probe so a transient failure does not lose the others, but reaching
+	// the end with none sent means nothing was tried — which is not the
+	// same as trying everything and finding nothing.
+	if sent == 0 {
+		return nil, notExercisedf("no payload pair could be sent against %q", target.Name)
+	}
 	return nil, nil
 }
 
 // measureNoise sends the same benign request sqliNoiseSamples times and
 // returns the largest difference in body length seen between any two of
 // them — the amount of pure run-to-run variation this endpoint has before
-// anything is injected. The last sample is kept as evidence.
+// anything is injected. The last sample and status are kept: the sample as
+// evidence, the status to tell "this endpoint is quiet" from "this endpoint
+// refuses the value entirely".
 func (c *sqliBoolean) measureNoise(
 	ctx context.Context,
 	client ports.HTTPClient,
@@ -273,13 +295,13 @@ func (c *sqliBoolean) measureNoise(
 	origin *url.URL,
 	all []model.Parameter,
 	target model.Parameter,
-) (noise int, lastSample []byte, err error) {
+) (noise int, lastSample []byte, lastStatus int, err error) {
 	minLen, maxLen := -1, -1
 
 	for range sqliNoiseSamples {
 		res, err := sendProbe(ctx, client, "sqli", ep, origin, all, target, sqliProbeFiller)
 		if err != nil {
-			return 0, nil, err
+			return 0, nil, 0, err
 		}
 		n := len(res.body)
 		if minLen == -1 || n < minLen {
@@ -288,9 +310,9 @@ func (c *sqliBoolean) measureNoise(
 		if n > maxLen {
 			maxLen = n
 		}
-		lastSample = res.body
+		lastSample, lastStatus = res.body, res.status
 	}
-	return maxLen - minLen, lastSample, nil
+	return maxLen - minLen, lastSample, lastStatus, nil
 }
 
 // probeResult is one HTTP response boiled down to what an active check

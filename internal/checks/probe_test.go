@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -143,5 +144,93 @@ func TestSQLi_AuthBreakingMidSweepIsAdmitted(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "second") {
 		t.Errorf("reason = %q, want it to name the parameter that went untested", err)
+	}
+}
+
+// ------------------------------------------------- rejected probes are not results
+
+// newValidatingServer answers 400 to any value of "id" that accept rejects,
+// the way a parameter declared as an enum, an integer or a uuid does.
+func newValidatingServer(t *testing.T, accept func(string) bool) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !accept(r.URL.Query().Get("id")) {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"invalid value for id"}`)
+			return
+		}
+		fmt.Fprint(w, `{"rows":[{"id":1}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestActiveChecks_BenignValueRejectedIsInconclusive is the defect measured
+// against the real task-api: GET /v1/tasks?status=1 answers 400 because
+// status is an enum, so the benign filler is refused exactly as the payload
+// is. The noise floor then gets measured over error pages, two error pages
+// are compared, the difference is zero — and 68 requests later the route is
+// recorded as examined and clean.
+func TestActiveChecks_BenignValueRejectedIsInconclusive(t *testing.T) {
+	srv := newValidatingServer(t, func(string) bool { return false })
+	target := endpointFor(srv, "/items", queryParam("id"))
+
+	tests := []struct {
+		name  string
+		check model.Check
+	}{
+		{name: "sqli-boolean", check: sqliCheck()},
+		{name: "xss-reflected", check: &xssReflected{templates: xssMarkerTemplates}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			findings, err := tt.check.Run(t.Context(), target, http.DefaultClient)
+
+			if len(findings) != 0 {
+				t.Errorf("got %d findings, want 0", len(findings))
+			}
+			if err == nil {
+				t.Fatal("Run() = nil error; the parameter was never exercised and must be admitted, not reported as clean")
+			}
+			if !errors.Is(err, model.ErrSkipped) {
+				t.Errorf("errors.Is(err, ErrSkipped) = false for %v", err)
+			}
+			if !errors.Is(err, ErrNotExercised) {
+				t.Errorf("errors.Is(err, ErrNotExercised) = false for %v", err)
+			}
+		})
+	}
+}
+
+// TestActiveChecks_ValidationRejectingOnlyThePayloadIsAResult is the
+// control, and the distinction the whole rule turns on. A benign value that
+// succeeds while the payload is refused is the OPPOSITE outcome: the
+// parameter was exercised and the target's validation held. Treating every
+// 4xx as inconclusive would throw that away and report a defended parameter
+// as unexamined — turning a working control into a gap in the report.
+func TestActiveChecks_ValidationRejectingOnlyThePayloadIsAResult(t *testing.T) {
+	srv := newValidatingServer(t, func(v string) bool { return v == sqliProbeFiller })
+	target := endpointFor(srv, "/items", queryParam("id"))
+
+	tests := []struct {
+		name  string
+		check model.Check
+	}{
+		{name: "sqli-boolean", check: sqliCheck()},
+		{name: "xss-reflected", check: &xssReflected{templates: xssMarkerTemplates}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			findings, err := tt.check.Run(t.Context(), target, http.DefaultClient)
+
+			if err != nil {
+				t.Errorf("Run() error = %v, want nil — the benign value was accepted, so the parameter WAS exercised", err)
+			}
+			if len(findings) != 0 {
+				t.Errorf("got %d findings, want 0 — validation refused every payload", len(findings))
+			}
+		})
 	}
 }

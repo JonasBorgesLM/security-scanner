@@ -504,27 +504,67 @@ func TestSQLiBoolean_UnbuildableRequestMakesTheParameterUntestable(t *testing.T)
 // A pair whose true or false probe fails mid-test (a transient network
 // error, say) must not abort testing the rest of the pairs — nor the rest
 // of the endpoint's parameters.
-func TestSQLiBoolean_FailedPairProbeIsSkippedNotFatal(t *testing.T) {
+// TestSQLiBoolean_EveryPairProbeFailingIsNotACleanResult replaces an
+// earlier test that asserted the opposite. It expected Run to return
+// (nil, nil) here — no findings and no error — on the reasoning that the
+// noise measurement had succeeded, so the check had not failed.
+//
+// That expectation encoded the defect. Every payload pair failing to send
+// means nothing was ever tried against this parameter, and a check that
+// returns "no findings" for that is indistinguishable from one that tried
+// everything and found nothing clean. The first is ignorance, the second is
+// a result.
+func TestSQLiBoolean_EveryPairProbeFailingIsNotACleanResult(t *testing.T) {
 	srv := vulnerableSQLiServer(t)
 
 	var calls atomic.Int32
 	flaky := flakyClient{
 		inner: http.DefaultClient,
 		fail: func() bool {
-			// Let the three noise-measurement calls through, then fail
-			// every call after that — so every payload pair's probe trips
-			// the error path in testParameter's loop.
+			// Let the noise-measurement calls through, then fail every call
+			// after that — so every payload pair's probe trips the error
+			// path in testParameter's loop.
 			return calls.Add(1) > sqliNoiseSamples
 		},
 	}
 
 	target := endpointFor(srv, "/items", queryParam("id"))
 	findings, err := sqliCheck().Run(t.Context(), target, flaky)
-	if err != nil {
-		t.Fatalf("Run() error = %v, want nil — the noise measurement itself succeeded", err)
-	}
+
 	if len(findings) != 0 {
-		t.Errorf("got %d findings, want 0 — every pair's probe failed, so nothing was confirmed", len(findings))
+		t.Errorf("got %d findings, want 0 — nothing was confirmed", len(findings))
+	}
+	if err == nil {
+		t.Fatal("Run() = nil error; a parameter no payload reached must be admitted, not reported as clean")
+	}
+	if !errors.Is(err, model.ErrSkipped) {
+		t.Errorf("errors.Is(err, ErrSkipped) = false for %v", err)
+	}
+	if !errors.Is(err, ErrNotExercised) {
+		t.Errorf("errors.Is(err, ErrNotExercised) = false for %v", err)
+	}
+}
+
+// TestSQLiBoolean_OnePairSurvivingIsStillAResult is the control, and the
+// half of the old test's intent that was right: a transient failure on some
+// pairs must not cost the ones that did get through.
+func TestSQLiBoolean_OnePairSurvivingIsStillAResult(t *testing.T) {
+	srv := vulnerableSQLiServer(t)
+
+	var calls atomic.Int32
+	flaky := flakyClient{
+		inner: http.DefaultClient,
+		fail: func() bool {
+			// Noise samples plus the first pair get through; everything
+			// after that fails.
+			return calls.Add(1) > sqliNoiseSamples+2
+		},
+	}
+
+	target := endpointFor(srv, "/items", queryParam("id"))
+	_, err := sqliCheck().Run(t.Context(), target, flaky)
+	if err != nil {
+		t.Errorf("Run() error = %v, want nil — one pair was sent, so the parameter was exercised", err)
 	}
 }
 

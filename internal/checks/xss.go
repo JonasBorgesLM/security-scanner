@@ -177,7 +177,17 @@ func (c *xssReflected) testParameter(
 	if err != nil {
 		return nil, fmt.Errorf("fetching baseline for %q: %w", target.Name, err)
 	}
+	// The benign filler was refused, so a marker would be refused the same
+	// way and never reach a response body to be reflected into. Nothing can
+	// be concluded about escaping from a request the target never processed.
+	if rejected(baseline.status) {
+		return nil, notExercisedf(
+			"%q answered %d to the benign value %q, so a marker could not be reflected either",
+			target.Name, baseline.status, xssProbeFiller)
+	}
 	baselineBody := string(baseline.body)
+
+	sent := 0
 
 	for _, tmpl := range c.templates {
 		// The marker's variable segment is derived deterministically from
@@ -199,6 +209,7 @@ func (c *xssReflected) testParameter(
 		if err != nil {
 			continue // this template is untestable; the next one might not be
 		}
+		sent++
 		probeBody := string(probeRes.body)
 
 		if !strings.Contains(probeBody, payload) {
@@ -239,6 +250,12 @@ func (c *xssReflected) testParameter(
 				// files.
 			},
 		}, nil
+	}
+
+	// No marker was ever delivered, so "not reflected" was never actually
+	// observed — see the same reasoning in sqli.go's testParameter.
+	if sent == 0 {
+		return nil, notExercisedf("no marker template could be sent against %q", target.Name)
 	}
 	return nil, nil
 }
