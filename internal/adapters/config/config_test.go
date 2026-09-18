@@ -231,3 +231,54 @@ func TestLoad_NegativeBurstIsRejected(t *testing.T) {
 		t.Errorf("error = %q, want it to name the offending field", err)
 	}
 }
+
+func TestLoad_NegativeRequestTimeout(t *testing.T) {
+	_, err := Load("testdata/negative-request-timeout.yaml")
+	if err == nil {
+		t.Fatal("Load() error = nil, want an error for a negative engine.request_timeout")
+	}
+	if !strings.Contains(err.Error(), "engine.request_timeout") {
+		t.Errorf("error = %q, want it to name the offending field", err)
+	}
+}
+
+// TestLoad_RequestTimeoutLongerThanTimeout guards against a bound that
+// exists on paper and can never fire: a per-request limit above the whole
+// run's limit is always pre-empted by the run's own deadline, which is
+// exactly the situation this field was added to prevent.
+func TestLoad_RequestTimeoutLongerThanTimeout(t *testing.T) {
+	_, err := Load("testdata/request-timeout-exceeds-timeout.yaml")
+	if err == nil {
+		t.Fatal("Load() error = nil, want an error when request_timeout exceeds timeout")
+	}
+	for _, want := range []string{"engine.request_timeout", "engine.timeout"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to mention %q", err, want)
+		}
+	}
+}
+
+// TestLoad_RequestTimeoutIsOptional pins both halves of the field's
+// contract: absent is valid (cmd/scanner supplies the default), and a value
+// that is present survives parsing intact.
+func TestLoad_RequestTimeoutIsOptional(t *testing.T) {
+	// testdata/config.yaml sets no request_timeout at all. It does carry a
+	// ${VAR} password, like the real thing.
+	t.Setenv("SCANNER_TEST_LAB_PASSWORD", "irrelevant-to-this-test")
+
+	cfg, err := Load("testdata/config.yaml")
+	if err != nil {
+		t.Fatalf("Load() unexpected error = %v", err)
+	}
+	if got := time.Duration(cfg.Engine.RequestTimeout); got != 0 {
+		t.Errorf("RequestTimeout with the key absent = %v, want 0 so the caller can apply its default", got)
+	}
+
+	cfg, err = Load("testdata/request-timeout-set.yaml")
+	if err != nil {
+		t.Fatalf("Load() unexpected error = %v", err)
+	}
+	if got, want := time.Duration(cfg.Engine.RequestTimeout), 20*time.Second; got != want {
+		t.Errorf("RequestTimeout = %v, want %v", got, want)
+	}
+}
