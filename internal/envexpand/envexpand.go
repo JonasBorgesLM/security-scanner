@@ -1,7 +1,7 @@
 // Package envexpand expands ${VAR} references in configuration text using
 // the process environment. It exists so secrets (LAB_PASSWORD and friends)
 // can live in config.yaml as placeholders instead of committed literals —
-// see invariant #6 in CLAUDE.md.
+// see invariant #7 in CLAUDE.md.
 //
 // An unset variable is an error, never a silent pass-through: sending a
 // literal "${LAB_PASSWORD}" to the target as a credential would fail in a
