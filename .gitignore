@@ -8,6 +8,11 @@
 *.so
 *.dylib
 
+# The CLI binary, as `go build -o scanner ./cmd/scanner` produces it.
+# Anchored with a leading slash on purpose: a bare `scanner` would also
+# match the cmd/scanner SOURCE directory and hide it from git entirely.
+/scanner
+
 # Test binary, built with `go test -c`
 *.test
 

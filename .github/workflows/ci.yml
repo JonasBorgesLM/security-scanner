@@ -42,6 +42,28 @@ jobs:
         with:
           version: latest
 
+      # Known vulnerabilities in what we ship. It sits with the other
+      # static gates rather than with the tests because it asks the same
+      # kind of question: a tool reading the code, with no service to
+      # stand up and nothing to flake.
+      #
+      # A scanner that reports other people's vulnerable dependencies
+      # while carrying its own is not a tool anyone should trust.
+      #
+      # Pinned rather than @latest so the gate is reproducible: the same
+      # commit must not pass today and fail tomorrow because the tool
+      # changed underneath it. Only the vulnerability database moves, and
+      # that movement is the point.
+      #
+      # Fail-closed on an *actionable* finding is govulncheck's own
+      # default, not something configured here: it exits non-zero only
+      # for a vulnerability the code can actually reach. Something
+      # present in the dependency graph but never called exits 0. The
+      # trade accepted with that: an advisory against the standard
+      # library can block merges until a Go release fixes it.
+      - name: Vulnerabilities (govulncheck)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+
       - name: Test
         run: go test ./...
 
