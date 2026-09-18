@@ -182,15 +182,17 @@ func runScan(args []string) error {
 		return fmt.Errorf("scan: checks incomplete, refusing to report a partial scan as a whole one: %w", err)
 	}
 
-	findings, skipped, failed := summarise(results)
-	skipped = sortUnexamined(append(skipped, heldBackEndpoints(targets, endpoints, cfg.Engine.TestDestructive)...))
-	failed = sortUnexamined(failed)
+	findings, examined, skipped, failed := summarise(results)
+	examined = sortCoverage(examined, examinedKey)
+	skipped = sortCoverage(append(skipped, heldBackEndpoints(targets, endpoints, cfg.Engine.TestDestructive)...), unexaminedKey)
+	failed = sortCoverage(failed, unexaminedKey)
 
 	out := model.FindingsFile{
 		SchemaVersion: model.SchemaVersion,
 		Coverage: model.Coverage{
 			EndpointsTotal: len(endpoints),
 			ChecksRun:      len(results),
+			Examined:       examined,
 			Skipped:        skipped,
 			Failed:         failed,
 		},
@@ -200,8 +202,8 @@ func runScan(args []string) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "\nwrote %s (%d findings, %d skipped, %d failed; %d checks run over %d endpoints)\n",
-		*outPath, len(findings), len(skipped), len(failed), len(results), len(endpoints))
+	fmt.Fprintf(os.Stderr, "\nwrote %s (%d findings, %d examined, %d skipped, %d failed; %d checks run over %d endpoints)\n",
+		*outPath, len(findings), len(examined), len(skipped), len(failed), len(results), len(endpoints))
 	for _, s := range skipped {
 		fmt.Fprintf(os.Stderr, "  skipped: %s\n", describe(s))
 	}
@@ -215,7 +217,7 @@ func runScan(args []string) error {
 // everything that could not be concluded. A scan that silently omits what it
 // could not examine reads as a clean bill of health it has not earned, so
 // both lists travel into the stage file rather than only onto the terminal.
-func summarise(results []engine.Result) (findings []model.Finding, skipped, failed []model.Unexamined) {
+func summarise(results []engine.Result) (findings []model.Finding, examined []model.ExaminedCheck, skipped, failed []model.Unexamined) {
 	findings = []model.Finding{}
 	for _, r := range results {
 		// Findings and an admission are not alternatives. A check that
@@ -236,9 +238,16 @@ func summarise(results []engine.Result) (findings []model.Finding, skipped, fail
 		case r.Err != nil:
 			entry.Reason = r.Err.Error()
 			failed = append(failed, entry)
+		default:
+			// Reached a verdict. Recording it is what lets a reader see
+			// that this route was looked at, rather than infer it from the
+			// route's absence everywhere else.
+			examined = append(examined, model.ExaminedCheck{
+				Check: r.CheckName, Method: r.Endpoint.Method, Path: r.Endpoint.Path,
+			})
 		}
 	}
-	return findings, skipped, failed
+	return findings, examined, skipped, failed
 }
 
 // heldBackEndpoints accounts for endpoints no check ever ran against,
@@ -282,20 +291,30 @@ func heldBackEndpoints(targets []model.Target, endpoints []model.Endpoint, testD
 	return out
 }
 
-// sortUnexamined orders the account deterministically. The engine already
-// returns results in job order, which is stable — this is the same
-// belt-and-braces the openapi adapter applies to its own output, so that a
-// later change to how work is scheduled cannot turn a committed stage file
-// into a spurious diff.
-func sortUnexamined(entries []model.Unexamined) []model.Unexamined {
-	slices.SortStableFunc(entries, func(a, b model.Unexamined) int {
+// sortCoverage orders an account deterministically, by route then check.
+// The engine already returns results in job order, which is stable — this
+// is the same belt-and-braces the openapi adapter applies to its own
+// output, so that a later change to how work is scheduled cannot turn a
+// committed stage file into a spurious diff.
+func sortCoverage[T any](entries []T, key func(T) (path, method, check string)) []T {
+	slices.SortStableFunc(entries, func(a, b T) int {
+		ap, am, ac := key(a)
+		bp, bm, bc := key(b)
 		return cmp.Or(
-			strings.Compare(a.Path, b.Path),
-			strings.Compare(a.Method, b.Method),
-			strings.Compare(a.Check, b.Check),
+			strings.Compare(ap, bp),
+			strings.Compare(am, bm),
+			strings.Compare(ac, bc),
 		)
 	})
 	return entries
+}
+
+func unexaminedKey(u model.Unexamined) (string, string, string) {
+	return u.Path, u.Method, u.Check
+}
+
+func examinedKey(e model.ExaminedCheck) (string, string, string) {
+	return e.Path, e.Method, e.Check
 }
 
 // describe renders one unexamined entry for the terminal.
@@ -396,7 +415,7 @@ func runAttack(args []string) error {
 		return fmt.Errorf("attack: run did not finish: %w", err)
 	}
 
-	confirmed, skipped, failed := summariseAttack(outcomes)
+	confirmed, examined, skipped, failed := summariseAttack(outcomes)
 
 	// Carry scan's account forward and add this stage's own. The two are
 	// different questions — "could the scan examine this route?" and "could
@@ -404,8 +423,9 @@ func runAttack(args []string) error {
 	// second would present a confirmed-nothing run over routes scan never
 	// reached as though the target had simply held up.
 	coverage := in.Coverage
-	coverage.Skipped = sortUnexamined(append(slices.Clone(coverage.Skipped), skipped...))
-	coverage.Failed = sortUnexamined(append(slices.Clone(coverage.Failed), failed...))
+	coverage.Examined = sortCoverage(append(slices.Clone(coverage.Examined), examined...), examinedKey)
+	coverage.Skipped = sortCoverage(append(slices.Clone(coverage.Skipped), skipped...), unexaminedKey)
+	coverage.Failed = sortCoverage(append(slices.Clone(coverage.Failed), failed...), unexaminedKey)
 
 	out := model.FindingsFile{
 		SchemaVersion: model.SchemaVersion,
@@ -449,7 +469,7 @@ func readFindings(path string) (model.FindingsFile, error) {
 // attack could not act on — the same transparency principle runScan's
 // summarise applies, in the stage where "no proof of concept exists for
 // this check" is the most common reason of all.
-func summariseAttack(outcomes []attack.Outcome) (confirmed int, skipped, failed []model.Unexamined) {
+func summariseAttack(outcomes []attack.Outcome) (confirmed int, examined []model.ExaminedCheck, skipped, failed []model.Unexamined) {
 	for _, o := range outcomes {
 		ep := o.Finding.Endpoint
 		switch {
@@ -461,11 +481,19 @@ func summariseAttack(outcomes []attack.Outcome) (confirmed int, skipped, failed 
 			failed = append(failed, model.Unexamined{
 				Check: o.Finding.CheckName, Method: ep.Method, Path: ep.Path, Reason: o.Err.Error(),
 			})
-		case o.Finding.Confirmed:
-			confirmed++
+		default:
+			// A Confirmer ran to completion. It reached a verdict whether or
+			// not the proof of concept reproduced, so it belongs in the same
+			// account as a check that came back clean.
+			examined = append(examined, model.ExaminedCheck{
+				Check: o.Finding.CheckName, Method: ep.Method, Path: ep.Path,
+			})
+			if o.Finding.Confirmed {
+				confirmed++
+			}
 		}
 	}
-	return confirmed, skipped, failed
+	return confirmed, examined, skipped, failed
 }
 
 // allAttacked returns every outcome's Finding, confirmed or not: attack

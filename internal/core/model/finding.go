@@ -56,6 +56,19 @@ type Unexamined struct {
 	Reason string `json:"reason"`
 }
 
+// ExaminedCheck is one check that ran against one route and reached a
+// verdict — whether or not that verdict was a finding.
+//
+// It carries no reason, and that is the whole difference from Unexamined:
+// a gap has to explain itself, a completed check has nothing to explain.
+// Two small types rather than one with a field that is meaningless in half
+// its uses.
+type ExaminedCheck struct {
+	Check  string `json:"check"`
+	Method string `json:"method"`
+	Path   string `json:"path"`
+}
+
 // Coverage accounts for what a stage actually managed to examine.
 //
 // Without it a scan that reached nothing and a scan of a clean target
@@ -76,6 +89,16 @@ type Coverage struct {
 	// ChecksRun is how many check-against-endpoint pairs were executed,
 	// whatever their outcome.
 	ChecksRun int `json:"checks_run"`
+	// Examined is every check that reached a verdict. Listing the routes
+	// that came back clean is what lets a reader answer "what happened to
+	// this route?" by looking, instead of subtracting the gaps from
+	// EndpointsTotal and hoping the remainder means what they think.
+	//
+	// The three lists close: len(Examined) + the check-level entries in
+	// Skipped + len(Failed) == ChecksRun. Skipped also holds endpoint-level
+	// entries, decided before any check was scheduled, which are not check
+	// runs and so are not in that sum.
+	Examined []ExaminedCheck `json:"examined"`
 	// Skipped is everything that could not be concluded: a check that
 	// declined, or an endpoint held back before any check ran.
 	Skipped []Unexamined `json:"skipped"`

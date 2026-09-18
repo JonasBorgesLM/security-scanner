@@ -105,10 +105,11 @@ type findingView struct {
 type Data struct {
 	SchemaVersion int
 	Summary       Summary
-	// Coverage is what the pipeline could not examine. It is rendered
-	// alongside the findings rather than left out of the report, because
-	// a reader who cannot see it has no way to tell a clean target from a
-	// scan that never reached one.
+	// Coverage is what the pipeline did and did not manage to examine. It
+	// is rendered alongside the findings rather than left out of the
+	// report, because a reader who cannot see it has no way to tell a clean
+	// target from a scan that never reached one — and no way to tell a
+	// route that came back clean from one that is simply not in the spec.
 	Coverage model.Coverage
 	Findings []findingView
 }

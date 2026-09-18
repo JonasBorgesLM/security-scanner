@@ -153,6 +153,16 @@ type Unexamined struct {
     Reason string
 }
 
+// ExaminedCheck é um check que rodou contra uma rota e chegou a um
+// veredito — tenha ele produzido finding ou não. Não carrega razão, e é
+// essa a diferença inteira para Unexamined: uma lacuna tem que se
+// explicar, um check concluído não tem o que explicar.
+type ExaminedCheck struct {
+    Check  string
+    Method string
+    Path   string
+}
+
 // Coverage presta contas do que o estágio de fato conseguiu examinar.
 // Sem ele, um scan que não alcançou nada e um scan de alvo limpo produzem
 // o mesmo arquivo — uma lista de findings vazia — e toda decisão a jusante
@@ -160,16 +170,23 @@ type Unexamined struct {
 type Coverage struct {
     EndpointsTotal int
     ChecksRun      int
+    Examined       []ExaminedCheck
     Skipped        []Unexamined
     Failed         []Unexamined
 }
+
+// As três listas fecham:
+//   len(Examined) + entradas de nível check em Skipped + len(Failed) == ChecksRun
+// Skipped guarda também entradas de nível endpoint (rota destrutiva, rota
+// ausente do alvo), decididas antes de qualquer check ser agendado — elas
+// não são check-runs, e ficam de fora da soma por não terem nome de check.
 
 // FindingsFile é o contrato em disco de scan e attack. Coverage viaja
 // junto dos findings, não num arquivo ao lado, para que os dois não possam
 // divergir e nenhum estágio receba findings sem a prestação de contas do
 // que os produziu.
 type FindingsFile struct {
-    SchemaVersion int        // 2 — a v1 não tinha Coverage e é recusada
+    SchemaVersion int        // 3 — v1 não tinha Coverage, v2 não tinha Examined; ambas recusadas
     Coverage      Coverage
     Findings      []Finding
 }
@@ -247,8 +264,9 @@ execução.
 |---|---|
 | `schema_version` precisa ser exatamente `1` | Mudança futura de formato falha alto, não é lida errado em silêncio |
 
-> **Nota (v2).** O `schema_version` dos arquivos de estágio (`findings.json`,
-> `confirmed.json`) subiu para `2` com o bloco `coverage`. Um arquivo v1 é
+> **Nota (v2/v3).** O `schema_version` dos arquivos de estágio (`findings.json`,
+> `confirmed.json`) subiu para `2` com o bloco `coverage`, e para `3` com a
+> lista `examined`. Um arquivo v1 é
 > **recusado**, não lido com cobertura vazia: um arquivo escrito antes de o
 > scanner saber prestar contas do que falhou em examinar é indistinguível de
 > um em que nada falhou, e lê-lo como o segundo reintroduz em silêncio a
