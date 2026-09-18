@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
 )
 
 func init() {
@@ -60,7 +59,7 @@ func (c *missingHeaders) Metadata() model.CheckMetadata {
 	}
 }
 
-func (c *missingHeaders) Run(_ context.Context, t model.Target, _ ports.HTTPClient) ([]model.Finding, error) {
+func (c *missingHeaders) Run(_ context.Context, t model.Target, _ model.Clients) ([]model.Finding, error) {
 	if t.Baseline == nil {
 		// Nothing was examined, so there is nothing to conclude. Returning
 		// no findings here would read as "this route is clean" — a lie the

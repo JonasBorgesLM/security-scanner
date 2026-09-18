@@ -71,14 +71,14 @@ func (c *fakeClient) elapsed() time.Duration {
 // stubCheck is a model.Check driven entirely by the test.
 type stubCheck struct {
 	meta model.CheckMetadata
-	run  func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error)
+	run  func(ctx context.Context, t model.Target, c model.Clients) ([]model.Finding, error)
 }
 
 var _ model.Check = (*stubCheck)(nil)
 
 func (s *stubCheck) Metadata() model.CheckMetadata { return s.meta }
 
-func (s *stubCheck) Run(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+func (s *stubCheck) Run(ctx context.Context, t model.Target, c model.Clients) ([]model.Finding, error) {
 	return s.run(ctx, t, c)
 }
 
@@ -87,12 +87,12 @@ func (s *stubCheck) Run(ctx context.Context, t model.Target, c ports.HTTPClient)
 func oneRequestCheck(name string) *stubCheck {
 	return &stubCheck{
 		meta: model.CheckMetadata{Name: name, Kind: model.KindActive},
-		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+		run: func(ctx context.Context, t model.Target, c model.Clients) ([]model.Finding, error) {
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://lab.invalid"+t.Endpoint.Path, nil)
 			if err != nil {
 				return nil, err
 			}
-			resp, err := c.Do(req)
+			resp, err := c.Default.Do(req)
 			if err != nil {
 				return nil, err
 			}
@@ -116,7 +116,7 @@ func newEngine(t *testing.T, testDestructive bool) *Engine {
 		MaxConcurrency:    4,
 		RequestsPerSecond: 100000,
 		TestDestructive:   testDestructive,
-	}, &fakeClient{})
+	}, &fakeClient{}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -162,7 +162,7 @@ func TestRun_CancellationStopsThePool(t *testing.T) {
 
 	check := &stubCheck{
 		meta: model.CheckMetadata{Name: "slow", Kind: model.KindActive},
-		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+		run: func(ctx context.Context, t model.Target, c model.Clients) ([]model.Finding, error) {
 			// Cancel once the pool is demonstrably busy.
 			if started.Add(1) == 4 {
 				close(release)
@@ -177,7 +177,7 @@ func TestRun_CancellationStopsThePool(t *testing.T) {
 		},
 	}
 
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 1000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 1000}, &fakeClient{}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -228,7 +228,7 @@ func TestRun_InFlightJobFinishesBeforeShutdown(t *testing.T) {
 
 	check := &stubCheck{
 		meta: model.CheckMetadata{Name: "finisher", Kind: model.KindPassive},
-		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+		run: func(ctx context.Context, t model.Target, c model.Clients) ([]model.Finding, error) {
 			once.Do(func() { close(entered) })
 			// Deliberately ignores ctx: the worker must still wait for it.
 			time.Sleep(50 * time.Millisecond)
@@ -237,7 +237,7 @@ func TestRun_InFlightJobFinishesBeforeShutdown(t *testing.T) {
 		},
 	}
 
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 1000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 1000}, &fakeClient{}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -272,7 +272,7 @@ func TestRun_TimeoutStopsThePool(t *testing.T) {
 
 	check := &stubCheck{
 		meta: model.CheckMetadata{Name: "slow", Kind: model.KindActive},
-		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+		run: func(ctx context.Context, t model.Target, c model.Clients) ([]model.Finding, error) {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
@@ -283,7 +283,7 @@ func TestRun_TimeoutStopsThePool(t *testing.T) {
 	}
 
 	start := time.Now()
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 2, RequestsPerSecond: 1000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 2, RequestsPerSecond: 1000}, &fakeClient{}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -305,13 +305,13 @@ func TestRun_CancelledBeforeStartRunsNothing(t *testing.T) {
 	var started atomic.Int32
 	check := &stubCheck{
 		meta: model.CheckMetadata{Name: "never", Kind: model.KindActive},
-		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+		run: func(ctx context.Context, t model.Target, c model.Clients) ([]model.Finding, error) {
 			started.Add(1)
 			return nil, nil
 		},
 	}
 
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 1000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 1000}, &fakeClient{}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -330,7 +330,7 @@ func TestRun_CancelledBeforeStartRunsNothing(t *testing.T) {
 }
 
 func TestRun_LeavesNoGoroutinesBehind(t *testing.T) {
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 8, RequestsPerSecond: 10000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 8, RequestsPerSecond: 10000}, &fakeClient{}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -369,7 +369,7 @@ func TestRun_NeverExceedsMaxConcurrency(t *testing.T) {
 	var inFlight, peak atomic.Int32
 	check := &stubCheck{
 		meta: model.CheckMetadata{Name: "counter", Kind: model.KindActive},
-		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+		run: func(ctx context.Context, t model.Target, c model.Clients) ([]model.Finding, error) {
 			n := inFlight.Add(1)
 			for {
 				old := peak.Load()
@@ -383,7 +383,7 @@ func TestRun_NeverExceedsMaxConcurrency(t *testing.T) {
 		},
 	}
 
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: maxConcurrency, RequestsPerSecond: 100000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: maxConcurrency, RequestsPerSecond: 100000}, &fakeClient{}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -402,7 +402,7 @@ func TestRun_NeverExceedsMaxConcurrency(t *testing.T) {
 
 func TestRun_MoreWorkersThanJobsIsHarmless(t *testing.T) {
 	client := &fakeClient{}
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 32, RequestsPerSecond: 10000}, client)
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 32, RequestsPerSecond: 10000}, client, client)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -417,7 +417,7 @@ func TestRun_MoreWorkersThanJobsIsHarmless(t *testing.T) {
 }
 
 func TestRun_NoJobs(t *testing.T) {
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 10}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 10}, &fakeClient{}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -486,7 +486,7 @@ func TestRun_CheckErrorIsReportedNotFatal(t *testing.T) {
 	boom := errors.New("check exploded")
 	failing := &stubCheck{
 		meta: model.CheckMetadata{Name: "failing", Kind: model.KindActive},
-		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+		run: func(ctx context.Context, t model.Target, c model.Clients) ([]model.Finding, error) {
 			if t.Endpoint.Path == "/r01" {
 				return nil, boom
 			}
@@ -494,7 +494,7 @@ func TestRun_CheckErrorIsReportedNotFatal(t *testing.T) {
 		},
 	}
 
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 10000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 10000}, &fakeClient{}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -529,7 +529,7 @@ func TestRun_CheckErrorIsReportedNotFatal(t *testing.T) {
 func TestRun_PanickingCheckBecomesAnError(t *testing.T) {
 	panicky := &stubCheck{
 		meta: model.CheckMetadata{Name: "panicky", Kind: model.KindActive},
-		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+		run: func(ctx context.Context, t model.Target, c model.Clients) ([]model.Finding, error) {
 			if t.Endpoint.Path == "/r00" {
 				panic("nil map write or similar")
 			}
@@ -537,7 +537,7 @@ func TestRun_PanickingCheckBecomesAnError(t *testing.T) {
 		},
 	}
 
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 2, RequestsPerSecond: 10000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 2, RequestsPerSecond: 10000}, &fakeClient{}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -567,14 +567,14 @@ func TestRun_PanickingCheckBecomesAnError(t *testing.T) {
 func TestRun_FindingsAreReturned(t *testing.T) {
 	check := &stubCheck{
 		meta: model.CheckMetadata{Name: "finder", Kind: model.KindPassive},
-		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+		run: func(ctx context.Context, t model.Target, c model.Clients) ([]model.Finding, error) {
 			return []model.Finding{
 				{ID: "f-" + t.Endpoint.Path, CheckName: "finder", Severity: "low"},
 			}, nil
 		},
 	}
 
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 10000}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 10000}, &fakeClient{}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -599,13 +599,13 @@ func TestRun_PassiveChecksSpendNoRateBudget(t *testing.T) {
 	client := &fakeClient{}
 	passive := &stubCheck{
 		meta: model.CheckMetadata{Name: "passive", Kind: model.KindPassive},
-		run: func(ctx context.Context, t model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+		run: func(ctx context.Context, t model.Target, c model.Clients) ([]model.Finding, error) {
 			return nil, nil
 		},
 	}
 
 	// 1 req/s would make even two requests take a second.
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 1, Burst: 1}, client)
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 1, Burst: 1}, client, client)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -630,21 +630,27 @@ func TestRun_PassiveChecksSpendNoRateBudget(t *testing.T) {
 // ---------------------------------------------------------------- construction
 
 func TestNew_RejectsInvalidConfig(t *testing.T) {
+	ok := Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 10}
 	tests := []struct {
-		name   string
-		cfg    Config
-		client ports.HTTPClient
+		name      string
+		cfg       Config
+		client    ports.HTTPClient
+		anonymous ports.HTTPClient
 	}{
-		{"empty base URL", Config{MaxConcurrency: 1, RequestsPerSecond: 10}, &fakeClient{}},
-		{"zero concurrency", Config{BaseURL: testBaseURL, MaxConcurrency: 0, RequestsPerSecond: 10}, &fakeClient{}},
-		{"negative concurrency", Config{BaseURL: testBaseURL, MaxConcurrency: -1, RequestsPerSecond: 10}, &fakeClient{}},
-		{"zero rate", Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 0}, &fakeClient{}},
-		{"negative rate", Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: -5}, &fakeClient{}},
-		{"nil client", Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 10}, nil},
+		{"empty base URL", Config{MaxConcurrency: 1, RequestsPerSecond: 10}, &fakeClient{}, &fakeClient{}},
+		{"zero concurrency", Config{BaseURL: testBaseURL, MaxConcurrency: 0, RequestsPerSecond: 10}, &fakeClient{}, &fakeClient{}},
+		{"negative concurrency", Config{BaseURL: testBaseURL, MaxConcurrency: -1, RequestsPerSecond: 10}, &fakeClient{}, &fakeClient{}},
+		{"zero rate", Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 0}, &fakeClient{}, &fakeClient{}},
+		{"negative rate", Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: -5}, &fakeClient{}, &fakeClient{}},
+		{"nil client", ok, nil, &fakeClient{}},
+		// The anonymous identity is as mandatory as the default one: a
+		// check handed a nil Anonymous would panic at the moment it asked
+		// the one question it exists to ask.
+		{"nil anonymous client", ok, &fakeClient{}, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := New(tt.cfg, tt.client); err == nil {
+			if _, err := New(tt.cfg, tt.client, tt.anonymous); err == nil {
 				t.Error("New() error = nil, want an error")
 			}
 		})
@@ -652,7 +658,7 @@ func TestNew_RejectsInvalidConfig(t *testing.T) {
 }
 
 func TestNew_DefaultsBurstToOne(t *testing.T) {
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 10}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 10}, &fakeClient{}, &fakeClient{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -698,7 +704,7 @@ func TestBuildJobs_HonoursAppliesTo(t *testing.T) {
 			Name:      "post-only",
 			AppliesTo: func(ep model.Endpoint) bool { return ep.Method == "POST" },
 		},
-		run: func(context.Context, model.Target, ports.HTTPClient) ([]model.Finding, error) {
+		run: func(context.Context, model.Target, model.Clients) ([]model.Finding, error) {
 			return nil, nil
 		},
 	}

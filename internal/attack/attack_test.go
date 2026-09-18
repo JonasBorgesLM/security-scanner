@@ -8,19 +8,18 @@ import (
 	"testing"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
 )
 
 // fakeConfirmer is a minimal Confirmer for exercising Run/Register without
 // depending on the real sqli/xss confirmers.
 type fakeConfirmer struct {
 	name string
-	fn   func(ctx context.Context, f model.Finding, c ports.HTTPClient) (model.Finding, error)
+	fn   func(ctx context.Context, f model.Finding, c model.Clients) (model.Finding, error)
 }
 
 func (f fakeConfirmer) CheckName() string { return f.name }
 
-func (f fakeConfirmer) Confirm(ctx context.Context, finding model.Finding, c ports.HTTPClient) (model.Finding, error) {
+func (f fakeConfirmer) Confirm(ctx context.Context, finding model.Finding, c model.Clients) (model.Finding, error) {
 	return f.fn(ctx, finding, c)
 }
 
@@ -78,7 +77,7 @@ func TestRegister_RejectsDuplicateName(t *testing.T) {
 	})
 }
 
-func noopConfirm(_ context.Context, f model.Finding, _ ports.HTTPClient) (model.Finding, error) {
+func noopConfirm(_ context.Context, f model.Finding, _ model.Clients) (model.Finding, error) {
 	return f, nil
 }
 
@@ -88,7 +87,7 @@ func TestRun_DispatchesByCheckName(t *testing.T) {
 	var got model.Finding
 	Register(fakeConfirmer{
 		name: "widget-check",
-		fn: func(_ context.Context, f model.Finding, _ ports.HTTPClient) (model.Finding, error) {
+		fn: func(_ context.Context, f model.Finding, _ model.Clients) (model.Finding, error) {
 			got = f
 			f.Confirmed = true
 			return f, nil
@@ -96,7 +95,7 @@ func TestRun_DispatchesByCheckName(t *testing.T) {
 	})
 
 	findings := []model.Finding{{ID: "f1", CheckName: "widget-check", Endpoint: model.Endpoint{Path: "/x"}}}
-	outcomes := Run(t.Context(), findings, http.DefaultClient, false)
+	outcomes := Run(t.Context(), findings, model.Clients{Default: http.DefaultClient}, false)
 
 	if len(outcomes) != 1 {
 		t.Fatalf("got %d outcomes, want 1", len(outcomes))
@@ -116,7 +115,7 @@ func TestRun_NoConfirmerIsSkippedNotError(t *testing.T) {
 	isolate(t)
 
 	findings := []model.Finding{{ID: "f1", CheckName: "missing-headers"}}
-	outcomes := Run(t.Context(), findings, http.DefaultClient, false)
+	outcomes := Run(t.Context(), findings, model.Clients{Default: http.DefaultClient}, false)
 
 	if outcomes[0].Err != nil {
 		t.Errorf("Err = %v, want nil — an unhandled check is not a failure", outcomes[0].Err)
@@ -135,14 +134,14 @@ func TestRun_AlreadyConfirmedIsSkipped(t *testing.T) {
 	called := false
 	Register(fakeConfirmer{
 		name: "widget-check",
-		fn: func(_ context.Context, f model.Finding, _ ports.HTTPClient) (model.Finding, error) {
+		fn: func(_ context.Context, f model.Finding, _ model.Clients) (model.Finding, error) {
 			called = true
 			return f, nil
 		},
 	})
 
 	findings := []model.Finding{{ID: "f1", CheckName: "widget-check", Confirmed: true}}
-	outcomes := Run(t.Context(), findings, http.DefaultClient, false)
+	outcomes := Run(t.Context(), findings, model.Clients{Default: http.DefaultClient}, false)
 
 	if called {
 		t.Error("confirmer was called for an already-confirmed finding")
@@ -158,7 +157,7 @@ func TestRun_DestructiveEndpointIsSkippedWithoutOptIn(t *testing.T) {
 	called := false
 	Register(fakeConfirmer{
 		name: "widget-check",
-		fn: func(_ context.Context, f model.Finding, _ ports.HTTPClient) (model.Finding, error) {
+		fn: func(_ context.Context, f model.Finding, _ model.Clients) (model.Finding, error) {
 			called = true
 			return f, nil
 		},
@@ -170,7 +169,7 @@ func TestRun_DestructiveEndpointIsSkippedWithoutOptIn(t *testing.T) {
 		Endpoint:  model.Endpoint{Method: "DELETE", Path: "/items/{id}", Destructive: true},
 	}}
 
-	outcomes := Run(t.Context(), findings, http.DefaultClient, false)
+	outcomes := Run(t.Context(), findings, model.Clients{Default: http.DefaultClient}, false)
 	if called {
 		t.Fatal("confirmer was called for a destructive endpoint without opt-in")
 	}
@@ -188,7 +187,7 @@ func TestRun_DestructiveEndpointIsAttemptedWithOptIn(t *testing.T) {
 	called := false
 	Register(fakeConfirmer{
 		name: "widget-check",
-		fn: func(_ context.Context, f model.Finding, _ ports.HTTPClient) (model.Finding, error) {
+		fn: func(_ context.Context, f model.Finding, _ model.Clients) (model.Finding, error) {
 			called = true
 			f.Confirmed = true
 			return f, nil
@@ -201,7 +200,7 @@ func TestRun_DestructiveEndpointIsAttemptedWithOptIn(t *testing.T) {
 		Endpoint:  model.Endpoint{Method: "DELETE", Destructive: true},
 	}}
 
-	outcomes := Run(t.Context(), findings, http.DefaultClient, true)
+	outcomes := Run(t.Context(), findings, model.Clients{Default: http.DefaultClient}, true)
 	if !called {
 		t.Fatal("confirmer was not called despite test_destructive opt-in")
 	}
@@ -216,7 +215,7 @@ func TestRun_ConfirmerErrorIsWrappedAndNamesTheRoute(t *testing.T) {
 	boom := errors.New("boom")
 	Register(fakeConfirmer{
 		name: "widget-check",
-		fn: func(_ context.Context, f model.Finding, _ ports.HTTPClient) (model.Finding, error) {
+		fn: func(_ context.Context, f model.Finding, _ model.Clients) (model.Finding, error) {
 			return f, boom
 		},
 	})
@@ -226,7 +225,7 @@ func TestRun_ConfirmerErrorIsWrappedAndNamesTheRoute(t *testing.T) {
 		CheckName: "widget-check",
 		Endpoint:  model.Endpoint{Method: "GET", Path: "/items"},
 	}}
-	outcomes := Run(t.Context(), findings, http.DefaultClient, false)
+	outcomes := Run(t.Context(), findings, model.Clients{Default: http.DefaultClient}, false)
 
 	if !errors.Is(outcomes[0].Err, boom) {
 		t.Fatalf("Err = %v, want it to wrap the confirmer's error", outcomes[0].Err)
@@ -246,7 +245,7 @@ func TestRun_PreservesOrder(t *testing.T) {
 		{ID: "b", CheckName: "unregistered-check"},
 		{ID: "c", CheckName: "widget-check", Confirmed: true},
 	}
-	outcomes := Run(t.Context(), findings, http.DefaultClient, false)
+	outcomes := Run(t.Context(), findings, model.Clients{Default: http.DefaultClient}, false)
 
 	if len(outcomes) != 3 {
 		t.Fatalf("got %d outcomes, want 3", len(outcomes))
@@ -264,7 +263,7 @@ func TestRun_StopsAttemptingOnceContextIsCancelled(t *testing.T) {
 	called := 0
 	Register(fakeConfirmer{
 		name: "widget-check",
-		fn: func(_ context.Context, f model.Finding, _ ports.HTTPClient) (model.Finding, error) {
+		fn: func(_ context.Context, f model.Finding, _ model.Clients) (model.Finding, error) {
 			called++
 			return f, nil
 		},
@@ -277,7 +276,7 @@ func TestRun_StopsAttemptingOnceContextIsCancelled(t *testing.T) {
 		{ID: "a", CheckName: "widget-check"},
 		{ID: "b", CheckName: "widget-check"},
 	}
-	outcomes := Run(ctx, findings, http.DefaultClient, false)
+	outcomes := Run(ctx, findings, model.Clients{Default: http.DefaultClient}, false)
 
 	if called != 0 {
 		t.Errorf("confirmer was called %d time(s) after the context was already cancelled, want 0", called)
@@ -291,7 +290,7 @@ func TestRun_StopsAttemptingOnceContextIsCancelled(t *testing.T) {
 
 func TestRun_EmptyInput(t *testing.T) {
 	isolate(t)
-	if got := Run(t.Context(), nil, http.DefaultClient, false); len(got) != 0 {
+	if got := Run(t.Context(), nil, model.Clients{Default: http.DefaultClient}, false); len(got) != 0 {
 		t.Errorf("got %d outcomes, want 0", len(got))
 	}
 }

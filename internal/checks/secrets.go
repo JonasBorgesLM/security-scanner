@@ -12,7 +12,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
 )
 
 //go:embed patterns/secrets.txt
@@ -110,7 +109,7 @@ func (c *exposedSecrets) Metadata() model.CheckMetadata {
 	}
 }
 
-func (c *exposedSecrets) Run(_ context.Context, t model.Target, _ ports.HTTPClient) ([]model.Finding, error) {
+func (c *exposedSecrets) Run(_ context.Context, t model.Target, _ model.Clients) ([]model.Finding, error) {
 	if t.Baseline == nil {
 		return nil, model.Skippedf("no baseline response for %s %s: %v",
 			t.Endpoint.Method, t.Endpoint.Path, t.BaselineErr)

@@ -165,7 +165,12 @@ func runScan(args []string) error {
 		scanClient = authenticator
 	}
 
-	eng, err := engine.New(engineConfig(cfg), scanClient)
+	// `client` is the ScopeGuard-enforcing client with no Authenticator
+	// above it, so it is exactly the anonymous identity: same boundary, same
+	// timeout, no credentials. Passing it here rather than building a second
+	// one is what keeps invariant 1 true for both identities — there is only
+	// ever one path to the network, and it is guarded.
+	eng, err := engine.New(engineConfig(cfg), scanClient, client)
 	if err != nil {
 		return err
 	}
@@ -400,8 +405,10 @@ func runAttack(args []string) error {
 
 	// A PoC is still traffic against the operator's own target: gentle by
 	// design applies here exactly as it does during scan, via the same
-	// rate limiter the engine uses internally.
-	rateLimited := engine.NewRateLimitedClient(attackClient, cfg.Engine.RequestsPerSecond, cfg.Engine.Burst)
+	// rate limiter the engine uses internally — and, as there, one budget
+	// shared by both identities. `client` is the guarded client with no
+	// Authenticator above it, so it is the anonymous one.
+	clients := engine.NewRateLimitedClients(attackClient, client, cfg.Engine.RequestsPerSecond, cfg.Engine.Burst)
 
 	destructive := countDestructiveFindings(in.Findings)
 	fmt.Fprintf(os.Stderr, "target:     %s\n", cfg.Target.BaseURL)
@@ -410,7 +417,7 @@ func runAttack(args []string) error {
 		fmt.Fprintf(os.Stderr, "            %d destructive finding(s) will be skipped (engine.test_destructive is false)\n", destructive)
 	}
 
-	outcomes := attack.Run(ctx, in.Findings, rateLimited, cfg.Engine.TestDestructive)
+	outcomes := attack.Run(ctx, in.Findings, clients, cfg.Engine.TestDestructive)
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("attack: run did not finish: %w", err)
 	}

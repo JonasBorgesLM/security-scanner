@@ -134,7 +134,7 @@ func TestSQLi_AuthBreakingMidSweepIsAdmitted(t *testing.T) {
 		Baseline: &model.Response{URL: "http://lab.test/items", StatusCode: 200, ProbedMethod: "GET"},
 	}
 
-	_, err := sqliCheck().Run(t.Context(), target, &authBreaksAfter{after: firstParameterBudget})
+	_, err := sqliCheck().Run(t.Context(), target, model.Clients{Default: &authBreaksAfter{after: firstParameterBudget}})
 
 	if err == nil {
 		t.Fatal("Run() = nil error; the second parameter was never probed and must be admitted")
@@ -185,7 +185,7 @@ func TestActiveChecks_BenignValueRejectedIsInconclusive(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			findings, err := tt.check.Run(t.Context(), target, http.DefaultClient)
+			findings, err := tt.check.Run(t.Context(), target, model.Clients{Default: http.DefaultClient})
 
 			if len(findings) != 0 {
 				t.Errorf("got %d findings, want 0", len(findings))
@@ -223,7 +223,7 @@ func TestActiveChecks_ValidationRejectingOnlyThePayloadIsAResult(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			findings, err := tt.check.Run(t.Context(), target, http.DefaultClient)
+			findings, err := tt.check.Run(t.Context(), target, model.Clients{Default: http.DefaultClient})
 
 			if err != nil {
 				t.Errorf("Run() error = %v, want nil — the benign value was accepted, so the parameter WAS exercised", err)

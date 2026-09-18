@@ -160,7 +160,7 @@ func TestSQLiConfirmer_ReproducesAndExtractsDatabaseName(t *testing.T) {
 	srv := vulnerableSQLiServer(t, 2)
 	f := sqliFinding(srv, "id", "' OR '1'='1")
 
-	got, err := (sqliConfirmer{}).Confirm(t.Context(), f, http.DefaultClient)
+	got, err := (sqliConfirmer{}).Confirm(t.Context(), f, model.Clients{Default: http.DefaultClient})
 	if err != nil {
 		t.Fatalf("Confirm() error = %v", err)
 	}
@@ -184,7 +184,7 @@ func TestSQLiConfirmer_FindsWithDifferentColumnCounts(t *testing.T) {
 			srv := vulnerableSQLiServer(t, n)
 			f := sqliFinding(srv, "id", "' OR '1'='1")
 
-			got, err := (sqliConfirmer{}).Confirm(t.Context(), f, http.DefaultClient)
+			got, err := (sqliConfirmer{}).Confirm(t.Context(), f, model.Clients{Default: http.DefaultClient})
 			if err != nil {
 				t.Fatalf("Confirm() error = %v", err)
 			}
@@ -202,7 +202,7 @@ func TestSQLiConfirmer_ColumnCountBeyondMaxIsNotFound(t *testing.T) {
 	srv := vulnerableSQLiServer(t, sqliMaxColumns+1)
 	f := sqliFinding(srv, "id", "' OR '1'='1")
 
-	got, err := (sqliConfirmer{}).Confirm(t.Context(), f, http.DefaultClient)
+	got, err := (sqliConfirmer{}).Confirm(t.Context(), f, model.Clients{Default: http.DefaultClient})
 	if err != nil {
 		t.Fatalf("Confirm() error = %v", err)
 	}
@@ -226,7 +226,7 @@ func TestSQLiConfirmer_DoesNotReproduceOnAPatchedTarget(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	f := sqliFinding(srv, "id", "' OR '1'='1")
-	got, err := (sqliConfirmer{}).Confirm(t.Context(), f, http.DefaultClient)
+	got, err := (sqliConfirmer{}).Confirm(t.Context(), f, model.Clients{Default: http.DefaultClient})
 	if err != nil {
 		t.Fatalf("Confirm() error = %v", err)
 	}
@@ -252,7 +252,7 @@ func TestSQLiConfirmer_DynamicButUnaffectedTargetStaysUnconfirmed(t *testing.T) 
 	t.Cleanup(srv.Close)
 
 	f := sqliFinding(srv, "id", "' OR '1'='1")
-	got, err := (sqliConfirmer{}).Confirm(t.Context(), f, http.DefaultClient)
+	got, err := (sqliConfirmer{}).Confirm(t.Context(), f, model.Clients{Default: http.DefaultClient})
 	if err != nil {
 		t.Fatalf("Confirm() error = %v", err)
 	}
@@ -265,7 +265,7 @@ func TestSQLiConfirmer_UnknownPayloadHasNoPairing(t *testing.T) {
 	srv := vulnerableSQLiServer(t, 2)
 	f := sqliFinding(srv, "id", "not a real payload from the pairs file")
 
-	_, err := (sqliConfirmer{}).Confirm(t.Context(), f, http.DefaultClient)
+	_, err := (sqliConfirmer{}).Confirm(t.Context(), f, model.Clients{Default: http.DefaultClient})
 	if err == nil {
 		t.Fatal("Confirm() error = nil, want an error — there is no false-condition payload to pair with")
 	}
@@ -274,7 +274,7 @@ func TestSQLiConfirmer_UnknownPayloadHasNoPairing(t *testing.T) {
 func TestSQLiConfirmer_UnreachableTargetIsAnError(t *testing.T) {
 	f := sqliFinding(&httptest.Server{URL: "http://127.0.0.1:1"}, "id", "' OR '1'='1")
 
-	_, err := (sqliConfirmer{}).Confirm(t.Context(), f, http.DefaultClient)
+	_, err := (sqliConfirmer{}).Confirm(t.Context(), f, model.Clients{Default: http.DefaultClient})
 	if err == nil {
 		t.Fatal("Confirm() error = nil, want an error for an unreachable target")
 	}
@@ -315,7 +315,7 @@ func TestSQLiConfirmer_PathParameterInjection(t *testing.T) {
 		},
 	}
 
-	got, err := (sqliConfirmer{}).Confirm(t.Context(), f, http.DefaultClient)
+	got, err := (sqliConfirmer{}).Confirm(t.Context(), f, model.Clients{Default: http.DefaultClient})
 	if err != nil {
 		t.Fatalf("Confirm() error = %v", err)
 	}
@@ -416,7 +416,7 @@ func TestSQLiConfirmer_ColumnCountFoundButNoCandidateExtracts(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	f := sqliFinding(srv, "id", "' OR '1'='1")
-	got, err := (sqliConfirmer{}).Confirm(t.Context(), f, http.DefaultClient)
+	got, err := (sqliConfirmer{}).Confirm(t.Context(), f, model.Clients{Default: http.DefaultClient})
 	if err != nil {
 		t.Fatalf("Confirm() error = %v", err)
 	}

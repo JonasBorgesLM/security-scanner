@@ -15,7 +15,6 @@ import (
 	"sync"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
 )
 
 // Confirmer attempts a non-destructive proof of concept for one check's
@@ -32,7 +31,11 @@ import (
 type Confirmer interface {
 	// CheckName is the model.Finding.CheckName this Confirmer handles.
 	CheckName() string
-	Confirm(ctx context.Context, f model.Finding, client ports.HTTPClient) (model.Finding, error)
+	// Confirm receives the same identities a check does. Most PoCs only
+	// need Default; one that reproduces an authorization failure needs to
+	// ask the question without credentials, which is the whole point of
+	// there being two.
+	Confirm(ctx context.Context, f model.Finding, clients model.Clients) (model.Finding, error)
 }
 
 var (
@@ -89,7 +92,7 @@ type Outcome struct {
 // testDestructive is set — the same non-destructive gate the engine applies
 // during scan, re-enforced here because attack is a separate process run
 // that cannot assume scan's decision still holds.
-func Run(ctx context.Context, findings []model.Finding, client ports.HTTPClient, testDestructive bool) []Outcome {
+func Run(ctx context.Context, findings []model.Finding, clients model.Clients, testDestructive bool) []Outcome {
 	out := make([]Outcome, len(findings))
 
 	for i, f := range findings {
@@ -106,13 +109,13 @@ func Run(ctx context.Context, findings []model.Finding, client ports.HTTPClient,
 		case f.Endpoint.Destructive && !testDestructive:
 			out[i] = Outcome{Finding: f, Skipped: "endpoint is destructive; engine.test_destructive is not set"}
 		default:
-			out[i] = attemptOne(ctx, f, client)
+			out[i] = attemptOne(ctx, f, clients)
 		}
 	}
 	return out
 }
 
-func attemptOne(ctx context.Context, f model.Finding, client ports.HTTPClient) Outcome {
+func attemptOne(ctx context.Context, f model.Finding, clients model.Clients) Outcome {
 	mu.RLock()
 	c, ok := confirmers[f.CheckName]
 	mu.RUnlock()
@@ -121,7 +124,7 @@ func attemptOne(ctx context.Context, f model.Finding, client ports.HTTPClient) O
 		return Outcome{Finding: f, Skipped: fmt.Sprintf("no PoC available for check %q", f.CheckName)}
 	}
 
-	confirmed, err := c.Confirm(ctx, f, client)
+	confirmed, err := c.Confirm(ctx, f, clients)
 	if err != nil {
 		return Outcome{Finding: f, Err: fmt.Errorf("attack: confirming %s on %s %s: %w",
 			f.CheckName, f.Endpoint.Method, f.Endpoint.Path, err)}

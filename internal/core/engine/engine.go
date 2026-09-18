@@ -99,8 +99,8 @@ type Result struct {
 
 // Engine runs Jobs through a bounded, rate-limited worker pool.
 type Engine struct {
-	cfg    Config
-	client ports.HTTPClient
+	cfg     Config
+	clients model.Clients
 }
 
 // New builds an Engine.
@@ -116,7 +116,7 @@ type Engine struct {
 // is deliberate — logins are rare and already collapsed into a single
 // in-flight attempt by the Authenticator — but it does mean the ceiling is
 // requests_per_second plus the occasional login.
-func New(cfg Config, client ports.HTTPClient) (*Engine, error) {
+func New(cfg Config, client, anonymous ports.HTTPClient) (*Engine, error) {
 	if cfg.BaseURL == "" {
 		return nil, errors.New("engine: BaseURL must not be empty")
 	}
@@ -129,13 +129,25 @@ func New(cfg Config, client ports.HTTPClient) (*Engine, error) {
 	if client == nil {
 		return nil, errors.New("engine: client must not be nil")
 	}
+	if anonymous == nil {
+		return nil, errors.New("engine: anonymous client must not be nil")
+	}
 	if cfg.Burst < 1 {
 		cfg.Burst = 1
 	}
 
+	// One limiter, shared by both identities. A second client must not buy
+	// a second request budget: what "gentle by design" protects is the
+	// target's experience, and the target does not care which credentials
+	// a request carried.
+	limiter := rate.NewLimiter(rate.Limit(cfg.RequestsPerSecond), cfg.Burst)
+
 	return &Engine{
-		cfg:    cfg,
-		client: newRateLimitedClient(client, cfg.RequestsPerSecond, cfg.Burst),
+		cfg: cfg,
+		clients: model.Clients{
+			Default:   &rateLimitedClient{inner: client, limiter: limiter},
+			Anonymous: &rateLimitedClient{inner: anonymous, limiter: limiter},
+		},
 	}, nil
 }
 
@@ -196,7 +208,7 @@ func (e *Engine) collectOne(ctx context.Context, ep model.Endpoint) model.Target
 	}
 	probedURL := req.URL.String()
 
-	resp, err := e.client.Do(req)
+	resp, err := e.clients.Default.Do(req)
 	if err != nil {
 		target.BaselineErr = fmt.Errorf("engine: baseline %s %s: %w", method, ep.Path, err)
 		return target
@@ -415,12 +427,13 @@ func (e *Engine) runJob(ctx context.Context, job Job) (res Result) {
 	// A passive check is handed a client that refuses every request, so
 	// "passive checks don't hit the network" holds by construction rather
 	// than by trusting each check to behave.
-	client := e.client
+	clients := e.clients
 	if meta.Kind == model.KindPassive {
-		client = deniedClient{checkName: meta.Name}
+		denied := deniedClient{checkName: meta.Name}
+		clients = model.Clients{Default: denied, Anonymous: denied}
 	}
 
-	findings, err := job.Check.Run(ctx, job.Target, client)
+	findings, err := job.Check.Run(ctx, job.Target, clients)
 	switch {
 	case errors.Is(err, model.ErrSkipped):
 		// A skip and a finding are not mutually exclusive. A check that
@@ -588,16 +601,25 @@ func newRateLimitedClient(inner ports.HTTPClient, requestsPerSecond float64, bur
 	}
 }
 
-// NewRateLimitedClient wraps inner with the same pacing New applies
-// internally, exported for pipeline stages that need "gentle by design"
-// without needing a full Engine — the attack command, which walks a
+// NewRateLimitedClients paces both identities with the same pacing New
+// applies internally, exported for pipeline stages that need "gentle by
+// design" without a full Engine — the attack command, which walks a
 // findings list sequentially rather than through a worker pool, is exactly
 // that case. Burst below 1 is treated as 1, matching New.
-func NewRateLimitedClient(inner ports.HTTPClient, requestsPerSecond float64, burst int) ports.HTTPClient {
+//
+// It returns both identities rather than one client so the single-budget
+// rule cannot be got wrong by a caller assembling them separately: there is
+// one limiter here, as there is inside New, because the target does not
+// care which credentials a request carried.
+func NewRateLimitedClients(client, anonymous ports.HTTPClient, requestsPerSecond float64, burst int) model.Clients {
 	if burst < 1 {
 		burst = 1
 	}
-	return newRateLimitedClient(inner, requestsPerSecond, burst)
+	limiter := rate.NewLimiter(rate.Limit(requestsPerSecond), burst)
+	return model.Clients{
+		Default:   &rateLimitedClient{inner: client, limiter: limiter},
+		Anonymous: &rateLimitedClient{inner: anonymous, limiter: limiter},
+	}
 }
 
 // Do blocks until the rate limiter allows the request, then delegates. A

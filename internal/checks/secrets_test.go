@@ -44,7 +44,7 @@ func fixtureTarget(t *testing.T, name string) model.Target {
 func runSecrets(t *testing.T, target model.Target) []model.Finding {
 	t.Helper()
 	// nil client on purpose: a passive check must never reach for it.
-	findings, err := secretsCheck().Run(t.Context(), target, nil)
+	findings, err := secretsCheck().Run(t.Context(), target, model.Clients{})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -345,7 +345,7 @@ func TestExposedSecrets_SkipsWithoutABaseline(t *testing.T) {
 		BaselineErr: errors.New("connection refused"),
 	}
 
-	_, err := secretsCheck().Run(t.Context(), failed, nil)
+	_, err := secretsCheck().Run(t.Context(), failed, model.Clients{})
 	if !errors.Is(err, model.ErrSkipped) {
 		t.Fatalf("error = %v, want it to wrap model.ErrSkipped", err)
 	}

@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
 )
 
 func targetWith(ep model.Endpoint, status int, probedMethod string) model.Target {
@@ -88,7 +87,7 @@ func TestAbsentFromTarget_OnlyTheUnambiguous404Counts(t *testing.T) {
 func TestBuildJobs_SchedulesNothingForAnAbsentRoute(t *testing.T) {
 	check := &stubCheck{
 		meta: model.CheckMetadata{Name: "any", Kind: model.KindPassive},
-		run: func(context.Context, model.Target, ports.HTTPClient) ([]model.Finding, error) {
+		run: func(context.Context, model.Target, model.Clients) ([]model.Finding, error) {
 			return nil, nil
 		},
 	}
@@ -112,7 +111,7 @@ func TestBuildJobs_SchedulesNothingForAnAbsentRoute(t *testing.T) {
 func TestBuildJobs_StillSchedulesAnAmbiguous404(t *testing.T) {
 	check := &stubCheck{
 		meta: model.CheckMetadata{Name: "any", Kind: model.KindPassive},
-		run: func(context.Context, model.Target, ports.HTTPClient) ([]model.Finding, error) {
+		run: func(context.Context, model.Target, model.Clients) ([]model.Finding, error) {
 			return nil, nil
 		},
 	}

@@ -46,7 +46,7 @@ func pathParam(name string) model.Parameter {
 
 func runSQLi(t *testing.T, target model.Target) ([]model.Finding, error) {
 	t.Helper()
-	return sqliCheck().Run(t.Context(), target, http.DefaultClient)
+	return sqliCheck().Run(t.Context(), target, model.Clients{Default: http.DefaultClient})
 }
 
 // ------------------------------------------------------------------ metadata
@@ -529,7 +529,7 @@ func TestSQLiBoolean_EveryPairProbeFailingIsNotACleanResult(t *testing.T) {
 	}
 
 	target := endpointFor(srv, "/items", queryParam("id"))
-	findings, err := sqliCheck().Run(t.Context(), target, flaky)
+	findings, err := sqliCheck().Run(t.Context(), target, model.Clients{Default: flaky})
 
 	if len(findings) != 0 {
 		t.Errorf("got %d findings, want 0 — nothing was confirmed", len(findings))
@@ -562,7 +562,7 @@ func TestSQLiBoolean_OnePairSurvivingIsStillAResult(t *testing.T) {
 	}
 
 	target := endpointFor(srv, "/items", queryParam("id"))
-	_, err := sqliCheck().Run(t.Context(), target, flaky)
+	_, err := sqliCheck().Run(t.Context(), target, model.Clients{Default: flaky})
 	if err != nil {
 		t.Errorf("Run() error = %v, want nil — one pair was sent, so the parameter was exercised", err)
 	}
@@ -610,7 +610,7 @@ func TestSQLiBoolean_UnreadableBodyMakesTheParameterUntestable(t *testing.T) {
 		Baseline: &model.Response{URL: "http://lab.invalid/items", StatusCode: http.StatusOK},
 	}
 
-	_, err := sqliCheck().Run(t.Context(), target, brokenBodyClient{})
+	_, err := sqliCheck().Run(t.Context(), target, model.Clients{Default: brokenBodyClient{}})
 	if !errors.Is(err, model.ErrSkipped) {
 		t.Fatalf("error = %v, want it to wrap model.ErrSkipped when the response body cannot be read", err)
 	}

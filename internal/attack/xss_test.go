@@ -50,7 +50,7 @@ func TestXSSConfirmer_ConfirmsUnescapedReflection(t *testing.T) {
 	srv := reflectingServer(t)
 	f := xssFinding(srv, "q", "test")
 
-	got, err := (xssConfirmer{}).Confirm(t.Context(), f, http.DefaultClient)
+	got, err := (xssConfirmer{}).Confirm(t.Context(), f, model.Clients{Default: http.DefaultClient})
 	if err != nil {
 		t.Fatalf("Confirm() error = %v", err)
 	}
@@ -77,7 +77,7 @@ func TestXSSConfirmer_UsesAFreshMarkerNotTheOriginalPayload(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	f := xssFinding(srv, "q", "<script>alert(1)</script>")
-	if _, err := (xssConfirmer{}).Confirm(t.Context(), f, http.DefaultClient); err != nil {
+	if _, err := (xssConfirmer{}).Confirm(t.Context(), f, model.Clients{Default: http.DefaultClient}); err != nil {
 		t.Fatalf("Confirm() error = %v", err)
 	}
 	if strings.Contains(lastQuery, "alert(1)") {
@@ -106,7 +106,7 @@ func TestXSSConfirmer_EscapedReflectionIsNotConfirmed(t *testing.T) {
 	srv := escapingServer(t)
 	f := xssFinding(srv, "q", "test")
 
-	got, err := (xssConfirmer{}).Confirm(t.Context(), f, http.DefaultClient)
+	got, err := (xssConfirmer{}).Confirm(t.Context(), f, model.Clients{Default: http.DefaultClient})
 	if err != nil {
 		t.Fatalf("Confirm() error = %v", err)
 	}
@@ -125,7 +125,7 @@ func TestXSSConfirmer_NoReflectionAtAllIsNotConfirmed(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	f := xssFinding(srv, "q", "test")
-	got, err := (xssConfirmer{}).Confirm(t.Context(), f, http.DefaultClient)
+	got, err := (xssConfirmer{}).Confirm(t.Context(), f, model.Clients{Default: http.DefaultClient})
 	if err != nil {
 		t.Fatalf("Confirm() error = %v", err)
 	}
@@ -155,7 +155,7 @@ func TestXSSConfirmer_PathParameterInjection(t *testing.T) {
 		},
 	}
 
-	got, err := (xssConfirmer{}).Confirm(t.Context(), f, http.DefaultClient)
+	got, err := (xssConfirmer{}).Confirm(t.Context(), f, model.Clients{Default: http.DefaultClient})
 	if err != nil {
 		t.Fatalf("Confirm() error = %v", err)
 	}
@@ -174,7 +174,7 @@ func TestXSSConfirmer_UnreachableTargetIsAnError(t *testing.T) {
 			Payload:       "test",
 		},
 	}
-	if _, err := (xssConfirmer{}).Confirm(t.Context(), f, http.DefaultClient); err == nil {
+	if _, err := (xssConfirmer{}).Confirm(t.Context(), f, model.Clients{Default: http.DefaultClient}); err == nil {
 		t.Fatal("Confirm() error = nil, want an error for an unreachable target")
 	}
 }

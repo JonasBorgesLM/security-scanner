@@ -38,7 +38,7 @@ func runHeaders(t *testing.T, target model.Target) ([]model.Finding, error) {
 	t.Helper()
 	// The nil client is deliberate: a passive check must never touch it, and
 	// a nil dereference here would be the loudest possible proof it did.
-	return (&missingHeaders{}).Run(t.Context(), target, nil)
+	return (&missingHeaders{}).Run(t.Context(), target, model.Clients{})
 }
 
 // reported lists the headers the findings name, via the discriminator the

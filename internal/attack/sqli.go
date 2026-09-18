@@ -64,7 +64,7 @@ var _ Confirmer = sqliConfirmer{}
 
 func (sqliConfirmer) CheckName() string { return "sqli-boolean" }
 
-func (sqliConfirmer) Confirm(ctx context.Context, f model.Finding, client ports.HTTPClient) (model.Finding, error) {
+func (sqliConfirmer) Confirm(ctx context.Context, f model.Finding, clients model.Clients) (model.Finding, error) {
 	truePayload := f.Request.Payload
 	falsePayload, ok := checks.FalsePayloadFor(truePayload)
 	if !ok {
@@ -76,12 +76,12 @@ func (sqliConfirmer) Confirm(ctx context.Context, f model.Finding, client ports.
 		return f, fmt.Errorf("reconstructing the false-condition request: %w", err)
 	}
 
-	noise, falseSample, err := sqliNoiseFloor(ctx, client, f.Request.Method, falseURL)
+	noise, falseSample, err := sqliNoiseFloor(ctx, clients.Default, f.Request.Method, falseURL)
 	if err != nil {
 		return f, fmt.Errorf("measuring noise: %w", err)
 	}
 
-	trueRes, err := get(ctx, client, f.Request.Method, f.Request.URL)
+	trueRes, err := get(ctx, clients.Default, f.Request.Method, f.Request.URL)
 	if err != nil {
 		return f, fmt.Errorf("replaying the original request: %w", err)
 	}
@@ -99,7 +99,7 @@ func (sqliConfirmer) Confirm(ctx context.Context, f model.Finding, client ports.
 	f.Evidence.ResponseSnippet = fmt.Sprintf(
 		"reproduced: true/false response-length difference is %d bytes against a %d-byte noise floor", diff, noise)
 
-	extractSQLiDatabaseName(ctx, client, &f, truePayload)
+	extractSQLiDatabaseName(ctx, clients.Default, &f, truePayload)
 	return f, nil
 }
 
