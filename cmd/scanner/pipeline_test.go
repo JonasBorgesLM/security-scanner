@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -261,6 +262,14 @@ func TestScan_EndToEnd(t *testing.T) {
 
 // Running the same scan twice against an unchanged target must produce a
 // byte-identical file, or findings.json cannot be reviewed with git diff.
+// TestScan_IsReproducible holds the strongest form of the claim, and only
+// where it is true: against a STATIC target, two scans produce byte-identical
+// files. newLabServer serves a fixed body, so evidence cannot move.
+//
+// It is not the general case. Any API worth scanning puts something that
+// moves in its responses, and evidence quotes those responses — see
+// TestScan_AgainstADynamicTargetIdentityIsStableEvidenceIsNot for the form
+// of the invariant that survives that.
 func TestScan_IsReproducible(t *testing.T) {
 	t.Setenv("SCANNER_IT_PASSWORD", "lab-pass")
 
@@ -1274,5 +1283,104 @@ func TestScan_ACleanRouteIsNamed(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("GET /secure came back clean and is named nowhere: %+v", out.Coverage.Examined)
+	}
+}
+
+// newDynamicSQLiServer is vulnerable to boolean SQLi and stamps every
+// response with a request counter, the way a real API stamps a request id.
+//
+// The counter is FIXED WIDTH so the noise floor stays zero and the finding
+// is still produced: only the content of the body changes between runs, not
+// its length. That is exactly the shape of dynamic content on a real target
+// — a timestamp, a request id, an etag — and exactly what
+// TestScan_IsReproducible's static server cannot reproduce.
+func newDynamicSQLiServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	var reqID atomic.Int64
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"access_token": "tok-dyn"},
+		})
+	})
+	mux.HandleFunc("/items", func(w http.ResponseWriter, r *http.Request) {
+		id := reqID.Add(1)
+		q := r.URL.Query().Get("q")
+		w.Header().Set("Content-Type", "application/json")
+
+		rows := `{"id":1}`
+		if strings.Contains(q, "1'='1") || strings.Contains(q, "1=1") {
+			rows = strings.TrimSuffix(strings.Repeat(`{"id":1},`, 25), ",")
+		}
+		fmt.Fprintf(w, `{"rid":"%06d","items":[%s]}`, id, rows)
+	})
+
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestScan_AgainstADynamicTargetIdentityIsStableEvidenceIsNot states the
+// invariant in the only form that survives contact with a real API.
+//
+// TestScan_IsReproducible asserts two scans produce byte-identical files,
+// and does so against a static server — which is the only place that claim
+// holds. Evidence quotes the target's body, and any API worth scanning puts
+// something that moves in it, so the bytes differ by design.
+//
+// What must not move is IDENTITY. scanner diff compares findings by ID, so
+// a scan of an unchanged target must report the same set of ids or every
+// re-scan looks like a wave of fixes and regressions.
+//
+// The evidence assertion is the control: without it this test would pass
+// just as well against a static target, proving nothing.
+func TestScan_AgainstADynamicTargetIdentityIsStableEvidenceIsNot(t *testing.T) {
+	t.Setenv("SCANNER_IT_PASSWORD", "lab-pass")
+
+	srv := newDynamicSQLiServer(t)
+	dir := t.TempDir()
+	specPath := writeSQLiSpec(t, dir)
+	configPath := writeSQLiConfig(t, dir, srv.URL)
+
+	scan := func(name string) model.FindingsFile {
+		out := filepath.Join(dir, name)
+		if err := runScan([]string{"--spec", specPath, "--config", configPath, "--out", out}); err != nil {
+			t.Fatalf("runScan() error = %v", err)
+		}
+		var f model.FindingsFile
+		mustReadJSON(t, out, &f)
+		if len(f.Findings) == 0 {
+			t.Fatalf("%s has no findings; this test needs the server to look vulnerable", name)
+		}
+		return f
+	}
+
+	first, second := scan("a.json"), scan("b.json")
+
+	idsOf := func(f model.FindingsFile) []string {
+		out := make([]string, len(f.Findings))
+		for i, x := range f.Findings {
+			out[i] = x.ID
+		}
+		return out
+	}
+	if a, b := idsOf(first), idsOf(second); !slices.Equal(a, b) {
+		t.Errorf("finding ids differ between two scans of an unchanged target:\n%v\n%v\n"+
+			"identity must not depend on anything measured at the target", a, b)
+	}
+
+	// Control: the target really is dynamic, so the evidence really did
+	// move. Without this the test would pass against a static server and
+	// assert nothing about the case it exists for.
+	var evidenceMoved bool
+	for i := range first.Findings {
+		if first.Findings[i].Evidence != second.Findings[i].Evidence {
+			evidenceMoved = true
+		}
+	}
+	if !evidenceMoved {
+		t.Error("evidence was identical across runs; the server is not dynamic and this test proves nothing")
 	}
 }
