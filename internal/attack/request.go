@@ -56,11 +56,20 @@ type probeResult struct {
 	body   []byte
 }
 
-// get sends a GET-shaped, body-less request to rawURL and reads its
-// response. Every Confirmer in this package only ever needs to read data
-// back (extract a database name, look for a reflected marker) — never to
-// resubmit the endpoint's own method with a body, which is squarely attack
-// territory this project does not go into.
+// get sends a body-less request to rawURL with method and reads the
+// response.
+//
+// It keeps the endpoint's own method — a finding on a POST route is
+// replayed as POST — because a Confirmer's job is to reproduce what scan
+// saw, and a server routing strictly by method would answer 405 to
+// anything else. What it never does is carry a body: every Confirmer here
+// only needs to read data back (extract a database name, look for a
+// reflected marker), and resubmitting an endpoint's own payload is
+// squarely the attack territory this project does not go into.
+//
+// The name is historical — it predates the method parameter — and is kept
+// because "body-less read-back request" is still what every caller wants
+// from it.
 func get(ctx context.Context, client ports.HTTPClient, method, rawURL string) (*probeResult, error) {
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
 	if err != nil {

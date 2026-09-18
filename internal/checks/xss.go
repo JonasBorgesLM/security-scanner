@@ -168,12 +168,15 @@ func (c *xssReflected) Run(ctx context.Context, t model.Target, client ports.HTT
 // half is what stands between this and a false positive — a page that
 // happens to already contain unescaped markup near this parameter
 // regardless of input (a neighbouring field, static page furniture) would
-// otherwise look identical to a genuine reflection. In practice a freshly
-// random marker can only appear in the baseline by matching this exact
-// check twice in a row, which does not happen — but the comparison is
-// cheap and the invariant it protects (never flag something the baseline
-// already shows was there before injection) is the same discipline
-// sqli.go's noise floor exists for.
+// otherwise look identical to a genuine reflection.
+//
+// The marker is derived from the injection point rather than drawn at
+// random (see markerValue), which makes this comparison more necessary
+// than a random one would: a marker from an EARLIER run of the same scan
+// is byte-identical to this one, so a target that cached the response or
+// stored the input can hand it back in the baseline. Finding it there
+// means the marker predates this probe, which is the one thing that must
+// never be read as a fresh reflection.
 func (c *xssReflected) testParameter(
 	ctx context.Context,
 	client ports.HTTPClient,
@@ -216,9 +219,11 @@ func (c *xssReflected) testParameter(
 			continue
 		}
 		if strings.Contains(baselineBody, payload) {
-			// The marker is random per probe, so this should be
-			// unreachable in practice; treated as "not this parameter"
-			// rather than trusted, per the doc comment above.
+			// Already present before this probe injected anything, so it
+			// proves nothing about this request. Reachable precisely
+			// because the marker is deterministic: a cached response, or
+			// input a previous run left stored on the target, carries the
+			// same bytes. See the doc comment above.
 			continue
 		}
 
