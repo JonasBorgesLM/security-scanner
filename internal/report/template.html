@@ -177,7 +177,7 @@
   <header>
     <h1>Security Scan Report</h1>
     <p>{{.Summary.TotalFindings}} finding(s) &middot; {{.Summary.TotalConfirmed}} confirmed by proof-of-concept.</p>
-    <p>{{.Coverage.ChecksRun}} check(s) run over {{.Coverage.EndpointsTotal}} endpoint(s) &middot; {{len .Coverage.Skipped}} not examined &middot; {{len .Coverage.Failed}} failed.</p>
+    <p>{{.Coverage.ChecksRun}} check(s) run over {{.Coverage.EndpointsTotal}} endpoint(s) &middot; {{len .Coverage.Examined}} reached a verdict &middot; {{len .Coverage.Skipped}} not examined &middot; {{len .Coverage.Failed}} failed.</p>
   </header>
 
   <section class="summary">
@@ -273,6 +273,29 @@
         <td class="mono">{{.Method}} {{.Path}}</td>
         <td class="mono">{{if .Check}}{{.Check}}{{else}}&mdash;{{end}}</td>
         <td>{{.Reason}}</td>
+      </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </section>
+  {{end}}
+
+{{if .Coverage.Examined}}
+  <section class="coverage">
+    <h2>Examined</h2>
+    <p class="lead">
+      Every check that reached a verdict. A route here was looked at; if it
+      is not among the findings above, it came back clean. This table is
+      what makes that second half mean something, rather than leaving it to
+      be inferred from an absence.
+    </p>
+    <table>
+      <tbody>
+      {{range .Coverage.Examined}}
+      <tr>
+        <th>examined</th>
+        <td class="mono">{{.Method}} {{.Path}}</td>
+        <td class="mono">{{.Check}}</td>
       </tr>
       {{end}}
       </tbody>

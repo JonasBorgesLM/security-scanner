@@ -713,7 +713,7 @@ func TestAttack_EmptyFindingsProducesEmptyOutput(t *testing.T) {
 	t.Setenv("SCANNER_IT_PASSWORD", "lab-pass")
 	dir := t.TempDir()
 	findingsPath := filepath.Join(dir, "findings.json")
-	os.WriteFile(findingsPath, []byte(`{"schema_version":2,"coverage":{"endpoints_total":0,"checks_run":0,"skipped":[],"failed":[]},"findings":[]}`), 0o600)
+	os.WriteFile(findingsPath, []byte(fmt.Sprintf(`{"schema_version":%d,"coverage":{"endpoints_total":0,"checks_run":0,"examined":[],"skipped":[],"failed":[]},"findings":[]}`, model.SchemaVersion)), 0o600)
 
 	configPath := writeSQLiConfig(t, dir, "http://127.0.0.1:1")
 	outPath := filepath.Join(dir, "confirmed.json")
@@ -928,7 +928,7 @@ func TestAttack_RejectsSchemaV1(t *testing.T) {
 	if err == nil {
 		t.Fatal("runAttack() error = nil, want a v1 findings file to be refused")
 	}
-	for _, want := range []string{"schema_version 1", "2"} {
+	for _, want := range []string{"schema_version 1", fmt.Sprint(model.SchemaVersion)} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, want it to mention %q", err, want)
 		}
@@ -960,8 +960,8 @@ func TestPipeline_CoverageSurvivesEveryStage(t *testing.T) {
 	var scanned model.FindingsFile
 	mustReadJSON(t, findingsPath, &scanned)
 
-	if scanned.SchemaVersion != 2 {
-		t.Fatalf("schema_version = %d, want 2", scanned.SchemaVersion)
+	if scanned.SchemaVersion != model.SchemaVersion {
+		t.Fatalf("schema_version = %d, want %d", scanned.SchemaVersion, model.SchemaVersion)
 	}
 	if scanned.Coverage.EndpointsTotal == 0 || scanned.Coverage.ChecksRun == 0 {
 		t.Errorf("coverage counts = %+v, want both above zero", scanned.Coverage)
@@ -1184,5 +1184,95 @@ func TestScan_PostRouteYieldsAnAdmissionNotDuplicateFindings(t *testing.T) {
 	}
 	if onSafeRoutes == 0 {
 		t.Error("no findings left on the GET routes; the rule silenced more than the substituted baselines")
+	}
+}
+
+// TestScan_CoverageAccountsForEveryScheduledCheck is the invariant that
+// makes the three lists trustworthy as an account rather than three
+// unrelated collections: every check that was scheduled ends up in exactly
+// one of them.
+//
+//	len(Examined) + check-level Skipped + len(Failed) == ChecksRun
+//
+// Skipped also holds endpoint-level entries — a destructive route, a route
+// absent from the target — which were decided before any check was
+// scheduled and so are not check runs. They are excluded from the sum by
+// having no check name, which is what that empty field is for.
+func TestScan_CoverageAccountsForEveryScheduledCheck(t *testing.T) {
+	t.Setenv("SCANNER_IT_PASSWORD", "lab-pass")
+
+	srv, _ := newLabServer(t)
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "findings.json")
+
+	if err := runScan([]string{
+		"--spec", writeSpec(t, dir),
+		"--config", writeConfig(t, dir, srv.URL),
+		"--out", outPath,
+	}); err != nil {
+		t.Fatalf("runScan() error = %v", err)
+	}
+
+	var out model.FindingsFile
+	mustReadJSON(t, outPath, &out)
+	cov := out.Coverage
+
+	checkLevelSkips := 0
+	for _, e := range cov.Skipped {
+		if e.Check != "" {
+			checkLevelSkips++
+		}
+	}
+
+	if got := len(cov.Examined) + checkLevelSkips + len(cov.Failed); got != cov.ChecksRun {
+		t.Errorf("examined(%d) + check-level skipped(%d) + failed(%d) = %d, want ChecksRun = %d",
+			len(cov.Examined), checkLevelSkips, len(cov.Failed), got, cov.ChecksRun)
+	}
+	if len(cov.Examined) == 0 {
+		t.Error("no examined entries; a scan of a reachable target must record what it did look at")
+	}
+}
+
+// TestScan_ACleanRouteIsNamed closes the gap the stage-1 exit measurement
+// found: six routes of the task-api were examined and clean, and appeared
+// in no list at all. Their status was recoverable only by listing the spec
+// and subtracting every route that had a gap — which is the same
+// "absence means two different things" the coverage block was added to end,
+// one level down.
+func TestScan_ACleanRouteIsNamed(t *testing.T) {
+	t.Setenv("SCANNER_IT_PASSWORD", "lab-pass")
+
+	srv, _ := newLabServer(t)
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "findings.json")
+
+	if err := runScan([]string{
+		"--spec", writeSpec(t, dir),
+		"--config", writeConfig(t, dir, srv.URL),
+		"--out", outPath,
+	}); err != nil {
+		t.Fatalf("runScan() error = %v", err)
+	}
+
+	var out model.FindingsFile
+	mustReadJSON(t, outPath, &out)
+
+	// /secure answers with every header missing-headers looks for, so it is
+	// examined and produces nothing — precisely the shape that used to
+	// vanish.
+	for _, f := range out.Findings {
+		if f.Endpoint.Path == "/secure" {
+			t.Fatalf("/secure produced finding %q; this test needs a route that comes back clean", f.ID)
+		}
+	}
+
+	var found bool
+	for _, e := range out.Coverage.Examined {
+		if e.Path == "/secure" && e.Check == "missing-headers" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("GET /secure came back clean and is named nowhere: %+v", out.Coverage.Examined)
 	}
 }

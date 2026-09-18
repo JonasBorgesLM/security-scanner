@@ -369,3 +369,35 @@ func TestWriteJSON_CarriesCoverage(t *testing.T) {
 		t.Errorf("coverage.failed = %+v, want the one failed check", got.Coverage.Failed)
 	}
 }
+
+// TestWriteHTML_NamesTheRoutesThatCameBackClean pins the report half of the
+// same gap: a reader must be able to see that a route was looked at, not
+// deduce it from the route's absence everywhere else.
+func TestWriteHTML_NamesTheRoutesThatCameBackClean(t *testing.T) {
+	coverage := model.Coverage{
+		EndpointsTotal: 2,
+		ChecksRun:      2,
+		Examined: []model.ExaminedCheck{
+			{Check: "missing-headers", Method: "GET", Path: "/health"},
+		},
+		Skipped: []model.Unexamined{
+			{Check: "missing-headers", Method: "POST", Path: "/items", Reason: "baseline collected with GET"},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := Build(nil, coverage).WriteHTML(&buf); err != nil {
+		t.Fatalf("WriteHTML() error = %v", err)
+	}
+	html := buf.String()
+
+	for _, want := range []string{"Examined", "/health", "reached a verdict"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("report does not mention %q", want)
+		}
+	}
+	// The gaps must not have been displaced by the new section.
+	if !strings.Contains(html, "Not examined") || !strings.Contains(html, "/items") {
+		t.Error("the not-examined table was lost when the examined one arrived")
+	}
+}
