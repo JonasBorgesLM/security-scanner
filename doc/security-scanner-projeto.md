@@ -9,7 +9,7 @@ Ferramenta de estudo em Go para descobrir vulnerabilidades, confirmar via ataque
 - **Uso restrito a ambiente próprio/autorizado.** O `ScopeGuard` (allowlist de hosts) é obrigatório e centralizado no cliente HTTP — nenhum request sai sem passar por ele.
 - **Não-destrutivo por padrão.** Só testa métodos seguros (`GET`, `POST` de teste); `DELETE`/`PUT`/`PATCH` exigem opt-in explícito por endpoint.
 - **Gentil por design.** Worker pool + rate limiter evitam self-DoS mesmo contra o próprio lab.
-- **Auditável.** Cada estágio grava JSON versionado; scans são reproduzíveis e comparáveis.
+- **Auditável.** Cada estágio grava JSON versionado. A **identidade** de um finding é determinística — é por ela que dois scans se comparam; a **evidência** é descritiva e se move com o alvo. Saída byte-idêntica vale contra alvo estático apenas (ver `doc/security-scanner-evolucao.md` §4.3).
 
 ---
 

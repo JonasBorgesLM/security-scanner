@@ -3,7 +3,9 @@ package checks
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
@@ -161,7 +163,7 @@ func (c *exposedSecrets) scan(p secretPattern, text string, comments []span, t m
 		}
 
 		findings = append(findings, model.Finding{
-			ID:       findingDiscriminator(p.name, len(findings)),
+			ID:       findingDiscriminator(p.name, secret),
 			Severity: severityFor(p.confidence),
 			Request: model.CapturedRequest{
 				Method: t.Baseline.ProbedMethod,
@@ -187,11 +189,24 @@ func secretBounds(match []int) (start, end int) {
 	return match[0], match[1]
 }
 
-func findingDiscriminator(name string, index int) string {
-	if index == 0 {
-		return name
-	}
-	return fmt.Sprintf("%s#%d", name, index)
+// findingDiscriminator builds the stable half of a finding's identity: the
+// pattern that matched, plus a short digest of the value it matched.
+//
+// It used to be the pattern name plus the finding's POSITION in the output,
+// which meant two matches of one pattern were "api-key" and "api-key#1" —
+// and removing the first renamed the second. A regression guard comparing
+// two scans would then report one removal as a removal and an addition,
+// which is the one thing it exists not to do.
+//
+// The digest is truncated hard on purpose. findings.json is committed, and
+// the file already carries redact(secret) — enough to locate the value,
+// never enough to reproduce it. A full hash would undo that by handing an
+// offline attacker something to test candidates against; 32 bits identifies
+// which match this is among a handful on one response and identifies
+// nothing else, because astronomically many strings share any given prefix.
+func findingDiscriminator(name, secret string) string {
+	sum := sha256.Sum256([]byte(secret))
+	return fmt.Sprintf("%s:%s", name, hex.EncodeToString(sum[:4]))
 }
 
 func severityFor(confidence string) string {

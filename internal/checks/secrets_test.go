@@ -53,10 +53,13 @@ func runSecrets(t *testing.T, target model.Target) []model.Finding {
 
 // patternsHit lists which patterns fired, stripped of the #N suffix that
 // distinguishes repeated hits.
+// patternsHit recovers which patterns matched, dropping the digest half of
+// each discriminator — the pattern name is what these tests are about, and
+// the digest is deliberately a value nothing should assert on.
 func patternsHit(findings []model.Finding) []string {
 	var out []string
 	for _, f := range findings {
-		name, _, _ := strings.Cut(f.ID, "#")
+		name, _, _ := strings.Cut(f.ID, ":")
 		if !slices.Contains(out, name) {
 			out = append(out, name)
 		}
@@ -459,4 +462,72 @@ func TestExposedSecrets_ProtocolRelativeURLIsNotAComment(t *testing.T) {
 		t.Errorf("evidence = %q, want no comment claim — a protocol-relative URL is not a comment opener",
 			findings[0].Evidence.ResponseSnippet)
 	}
+}
+
+// TestExposedSecrets_IdentitySurvivesAnEarlierMatchDisappearing is the
+// defect that made findings.json unusable as a regression baseline.
+//
+// The discriminator used to be the pattern name plus the finding's POSITION
+// in the output: two matches of one pattern came out as "google-api-key"
+// and "google-api-key#1". Fix the first and the second inherits its id — so
+// a diff of two scans reports one removal as a removal AND an addition,
+// which is precisely the false signal a regression guard exists to avoid.
+func TestExposedSecrets_IdentitySurvivesAnEarlierMatchDisappearing(t *testing.T) {
+	const first = "AIzaSyA00000000000000000000000000000001"
+	const second = "AIzaSyB00000000000000000000000000000002"
+
+	both := runSecrets(t, bodyTarget(`{"a":"`+first+`","b":"`+second+`"}`))
+	if len(both) != 2 {
+		t.Fatalf("got %d findings, want 2 — this test needs one pattern matching twice: %v", len(both), ids(both))
+	}
+
+	// The first secret is fixed; only the second remains.
+	remaining := runSecrets(t, bodyTarget(`{"b":"`+second+`"}`))
+	if len(remaining) != 1 {
+		t.Fatalf("got %d findings, want 1: %v", len(remaining), ids(remaining))
+	}
+
+	if remaining[0].ID != both[1].ID {
+		t.Errorf("the surviving secret's id changed from %q to %q when the earlier match was removed;\n"+
+			"a diff would read that as one removal and one addition instead of one removal",
+			both[1].ID, remaining[0].ID)
+	}
+	if both[0].ID == both[1].ID {
+		t.Errorf("two distinct secrets share the id %q", both[0].ID)
+	}
+}
+
+// TestExposedSecrets_IdentityDoesNotReproduceTheSecret guards the rule the
+// discriminator had to be built around: the file it lands in is committed,
+// so nothing in it may hand back a usable credential. The digest is short
+// on purpose — an identifier among a handful of matches, not a fingerprint
+// to test candidates against offline.
+func TestExposedSecrets_IdentityDoesNotReproduceTheSecret(t *testing.T) {
+	const secret = "AIzaSyA00000000000000000000000000000001"
+
+	findings := runSecrets(t, bodyTarget(`{"a":"`+secret+`"}`))
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want 1", len(findings))
+	}
+
+	id := findings[0].ID
+	if strings.Contains(id, secret) {
+		t.Fatalf("id %q contains the secret verbatim", id)
+	}
+	_, digest, found := strings.Cut(id, ":")
+	if !found {
+		t.Fatalf("id %q has no digest half", id)
+	}
+	if len(digest) != 8 {
+		t.Errorf("digest = %q (%d chars), want 8 — long enough to tell matches apart, short enough to identify nothing else",
+			digest, len(digest))
+	}
+}
+
+func ids(findings []model.Finding) []string {
+	out := make([]string, len(findings))
+	for i, f := range findings {
+		out[i] = f.ID
+	}
+	return out
 }
