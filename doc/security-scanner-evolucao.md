@@ -199,6 +199,25 @@ revelou três causas que a leitura não pegava.
 
 Alvo: `task-api` local, 30 endpoints no spec, 22 não-destrutivos, autenticado.
 
+O instrumento é `tools/reqcount`, um proxy contador que fica entre o scanner
+e o alvo e reporta quantos requests saíram e o que voltou. Ele existe porque
+a saída do próprio scanner não pode dar esse número — a etapa inteira partiu
+da constatação de que ele sub-reportava o que fazia, então medi-lo com ele
+mesmo seria circular:
+
+```
+go run ./tools/reqcount -upstream http://localhost:8080 &
+scanner scan --spec openapi.yaml --config config-pelo-proxy.yaml --out findings.json
+kill -TERM %1
+```
+
+**Custo que isso tem:** rodando pelo proxy, o ScopeGuard passa a validar o
+endereço *do proxy*, não o do alvo. A allowlist continua valendo — nada sai
+para fora dela — mas o que ela garante vira "o scanner só falou com o proxy",
+e o proxy fala com o que `-upstream` mandar. A fronteira que importa se mudou
+para dentro de uma flag. É troca aceitável para uma medição deliberada contra
+o próprio lab, e inaceitável para qualquer outra coisa.
+
 ```
 TOTAL: 278 requests do scanner
 
