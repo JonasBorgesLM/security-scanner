@@ -105,7 +105,12 @@ type findingView struct {
 type Data struct {
 	SchemaVersion int
 	Summary       Summary
-	Findings      []findingView
+	// Coverage is what the pipeline could not examine. It is rendered
+	// alongside the findings rather than left out of the report, because
+	// a reader who cannot see it has no way to tell a clean target from a
+	// scan that never reached one.
+	Coverage model.Coverage
+	Findings []findingView
 }
 
 // Build computes the report's executive summary and orders findings most
@@ -114,7 +119,7 @@ type Data struct {
 // scan order. The sort is over stable, deterministic keys only (severity,
 // confirmed, check name, path, ID), so identical input always yields an
 // identical Data, matching the rest of the pipeline's determinism guarantee.
-func Build(findings []model.Finding) Data {
+func Build(findings []model.Finding, coverage model.Coverage) Data {
 	views := make([]findingView, len(findings))
 	for i, f := range findings {
 		views[i] = findingView{
@@ -146,6 +151,7 @@ func Build(findings []model.Finding) Data {
 	return Data{
 		SchemaVersion: model.SchemaVersion,
 		Summary:       summarise(findings),
+		Coverage:      coverage,
 		Findings:      views,
 	}
 }
@@ -205,6 +211,7 @@ func (d Data) WriteHTML(w io.Writer) error {
 type jsonFile struct {
 	SchemaVersion int             `json:"schema_version"`
 	Summary       Summary         `json:"summary"`
+	Coverage      model.Coverage  `json:"coverage"`
 	Findings      []model.Finding `json:"findings"`
 }
 
@@ -220,6 +227,7 @@ func (d Data) WriteJSON(w io.Writer) error {
 	return enc.Encode(jsonFile{
 		SchemaVersion: d.SchemaVersion,
 		Summary:       d.Summary,
+		Coverage:      d.Coverage,
 		Findings:      findings,
 	})
 }

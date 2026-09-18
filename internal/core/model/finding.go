@@ -39,10 +39,60 @@ type Finding struct {
 	Confirmed     bool            `json:"confirmed"`
 }
 
+// Unexamined is one route-and-check pair the scanner could not draw a
+// conclusion about, and why.
+//
+// It is deliberately not a Finding: a route that could not be examined is
+// the absence of information, and folding it in among findings would make
+// "we looked and found nothing" and "we could not look" the same shape
+// again — which is what this type exists to prevent.
+//
+// Check is empty for something decided before any check ran, such as an
+// endpoint held back by the non-destructive gate.
+type Unexamined struct {
+	Check  string `json:"check,omitempty"`
+	Method string `json:"method"`
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
+// Coverage accounts for what a stage actually managed to examine.
+//
+// Without it a scan that reached nothing and a scan of a clean target
+// produce the same file: an empty findings list. That is not a reporting
+// nicety — it makes every downstream judgement wrong in the same
+// direction, because "no findings" reads as "no problems" and a regression
+// guard comparing two such files reports a route that merely went
+// unexamined as one that was fixed.
+//
+// Counts and lists are both present on purpose: the counts answer "was
+// this scan meaningful at all?" at a glance, the lists answer "what
+// exactly did it miss?" without which the counts are just a worrying
+// number.
+type Coverage struct {
+	// EndpointsTotal is every operation the spec declared, including those
+	// no check ever ran against.
+	EndpointsTotal int `json:"endpoints_total"`
+	// ChecksRun is how many check-against-endpoint pairs were executed,
+	// whatever their outcome.
+	ChecksRun int `json:"checks_run"`
+	// Skipped is everything that could not be concluded: a check that
+	// declined, or an endpoint held back before any check ran.
+	Skipped []Unexamined `json:"skipped"`
+	// Failed is everything that errored. Never evidence of a
+	// vulnerability — only of a scan that did not finish its job.
+	Failed []Unexamined `json:"failed"`
+}
+
 // FindingsFile is the on-disk, versioned JSON contract written by `scan`
 // (as findings.json) and `attack` (as confirmed.json), and read back by
 // the next stage.
+//
+// Coverage travels with the findings rather than in a file beside them so
+// the two cannot drift apart, and so no stage can be handed findings
+// without also being handed the account of what produced them.
 type FindingsFile struct {
 	SchemaVersion int       `json:"schema_version"`
+	Coverage      Coverage  `json:"coverage"`
 	Findings      []Finding `json:"findings"`
 }

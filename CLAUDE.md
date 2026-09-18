@@ -54,6 +54,8 @@ Lightweight hexagonal (ports/adapters), so checks can be tested against a fake `
 
 `scan` → `findings.json` (suspicions, `Confirmed: false`) → `attack` → `confirmed.json` (reproduced via the `CapturedRequest` stored on each `Finding`, using non-destructive PoCs) → `report` → HTML + JSON summary by severity. Each stage's output is a versioned (`schema_version`), git-diffable JSON file — manually reviewable before the next stage runs, and re-runnable on a different machine.
 
+**Every stage file carries a `coverage` block alongside its findings** (`model.Coverage`, schema version 2). It is what separates "looked and found nothing" from "could not look": counts of endpoints and checks run, plus a `model.Unexamined` entry per route/check pair that was skipped or failed, each with its reason. `scan` builds it (check-level skips, plus endpoints the non-destructive gate held back), `attack` carries it forward and adds its own, and `report` renders it — an empty findings list with a non-empty coverage renders as an explicit caveat, never as "No findings". A `schema_version: 1` file is refused rather than read with an empty coverage, since the two would be indistinguishable. This is invariant 6's other half: a skipped route that only reaches stderr has not reached the report.
+
 ## Non-negotiable invariants
 
 These constraints are the actual point of the project and must never be relaxed without the user explicitly asking:

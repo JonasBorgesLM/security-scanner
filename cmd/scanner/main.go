@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -181,45 +183,110 @@ func runScan(args []string) error {
 	}
 
 	findings, skipped, failed := summarise(results)
+	skipped = sortUnexamined(append(skipped, heldBackEndpoints(endpoints, cfg.Engine.TestDestructive)...))
+	failed = sortUnexamined(failed)
 
 	out := model.FindingsFile{
 		SchemaVersion: model.SchemaVersion,
-		Findings:      findings,
+		Coverage: model.Coverage{
+			EndpointsTotal: len(endpoints),
+			ChecksRun:      len(results),
+			Skipped:        skipped,
+			Failed:         failed,
+		},
+		Findings: findings,
 	}
 	if err := writeJSON(*outPath, out); err != nil {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "\nwrote %s (%d findings, %d skipped, %d failed)\n",
-		*outPath, len(findings), len(skipped), len(failed))
+	fmt.Fprintf(os.Stderr, "\nwrote %s (%d findings, %d skipped, %d failed; %d checks run over %d endpoints)\n",
+		*outPath, len(findings), len(skipped), len(failed), len(results), len(endpoints))
 	for _, s := range skipped {
-		fmt.Fprintf(os.Stderr, "  skipped: %s\n", s)
+		fmt.Fprintf(os.Stderr, "  skipped: %s\n", describe(s))
 	}
 	for _, f := range failed {
-		fmt.Fprintf(os.Stderr, "  failed:  %s\n", f)
+		fmt.Fprintf(os.Stderr, "  failed:  %s\n", describe(f))
 	}
 	return nil
 }
 
-// summarise flattens results into the findings to write plus human-readable
-// lines for the runs that could not conclude. Skipped and failed routes are
-// reported explicitly: a scan that silently omits what it could not examine
-// reads as a clean bill of health it has not earned.
-func summarise(results []engine.Result) (findings []model.Finding, skipped, failed []string) {
+// summarise flattens results into the findings to write plus the account of
+// everything that could not be concluded. A scan that silently omits what it
+// could not examine reads as a clean bill of health it has not earned, so
+// both lists travel into the stage file rather than only onto the terminal.
+func summarise(results []engine.Result) (findings []model.Finding, skipped, failed []model.Unexamined) {
 	findings = []model.Finding{}
 	for _, r := range results {
 		switch {
 		case r.Skipped:
-			skipped = append(skipped, fmt.Sprintf("%s on %s %s: %s",
-				r.CheckName, r.Endpoint.Method, r.Endpoint.Path, r.SkipReason))
+			skipped = append(skipped, model.Unexamined{
+				Check:  r.CheckName,
+				Method: r.Endpoint.Method,
+				Path:   r.Endpoint.Path,
+				Reason: r.SkipReason,
+			})
 		case r.Err != nil:
-			failed = append(failed, fmt.Sprintf("%s on %s %s: %v",
-				r.CheckName, r.Endpoint.Method, r.Endpoint.Path, r.Err))
+			failed = append(failed, model.Unexamined{
+				Check:  r.CheckName,
+				Method: r.Endpoint.Method,
+				Path:   r.Endpoint.Path,
+				Reason: r.Err.Error(),
+			})
 		default:
 			findings = append(findings, r.Findings...)
 		}
 	}
 	return findings, skipped, failed
+}
+
+// heldBackEndpoints accounts for endpoints no check ever ran against,
+// because the non-destructive gate held them back before scheduling.
+//
+// The engine drops them silently — correctly, since that is its job — but
+// "the scanner deliberately did not look here" is exactly the kind of gap
+// the coverage block exists to make visible. Reported per endpoint, with no
+// check name, because the decision precedes any check.
+func heldBackEndpoints(endpoints []model.Endpoint, testDestructive bool) []model.Unexamined {
+	if testDestructive {
+		return nil
+	}
+	var out []model.Unexamined
+	for _, ep := range endpoints {
+		if !ep.Destructive {
+			continue
+		}
+		out = append(out, model.Unexamined{
+			Method: ep.Method,
+			Path:   ep.Path,
+			Reason: "endpoint is destructive; engine.test_destructive is not set",
+		})
+	}
+	return out
+}
+
+// sortUnexamined orders the account deterministically. The engine already
+// returns results in job order, which is stable — this is the same
+// belt-and-braces the openapi adapter applies to its own output, so that a
+// later change to how work is scheduled cannot turn a committed stage file
+// into a spurious diff.
+func sortUnexamined(entries []model.Unexamined) []model.Unexamined {
+	slices.SortStableFunc(entries, func(a, b model.Unexamined) int {
+		return cmp.Or(
+			strings.Compare(a.Path, b.Path),
+			strings.Compare(a.Method, b.Method),
+			strings.Compare(a.Check, b.Check),
+		)
+	})
+	return entries
+}
+
+// describe renders one unexamined entry for the terminal.
+func describe(u model.Unexamined) string {
+	if u.Check == "" {
+		return fmt.Sprintf("%s %s: %s", u.Method, u.Path, u.Reason)
+	}
+	return fmt.Sprintf("%s on %s %s: %s", u.Check, u.Method, u.Path, u.Reason)
 }
 
 // engineConfig maps the YAML-facing config onto the engine's own, the same
@@ -314,8 +381,18 @@ func runAttack(args []string) error {
 
 	confirmed, skipped, failed := summariseAttack(outcomes)
 
+	// Carry scan's account forward and add this stage's own. The two are
+	// different questions — "could the scan examine this route?" and "could
+	// the attack reproduce this finding?" — but a report built only on the
+	// second would present a confirmed-nothing run over routes scan never
+	// reached as though the target had simply held up.
+	coverage := in.Coverage
+	coverage.Skipped = sortUnexamined(append(slices.Clone(coverage.Skipped), skipped...))
+	coverage.Failed = sortUnexamined(append(slices.Clone(coverage.Failed), failed...))
+
 	out := model.FindingsFile{
 		SchemaVersion: model.SchemaVersion,
+		Coverage:      coverage,
 		Findings:      allAttacked(outcomes),
 	}
 	if err := writeJSON(*outPath, out); err != nil {
@@ -325,10 +402,10 @@ func runAttack(args []string) error {
 	fmt.Fprintf(os.Stderr, "\nwrote %s (%d confirmed, %d skipped, %d failed, %d not confirmed)\n",
 		*outPath, confirmed, len(skipped), len(failed), len(out.Findings)-confirmed-len(skipped)-len(failed))
 	for _, s := range skipped {
-		fmt.Fprintf(os.Stderr, "  skipped: %s\n", s)
+		fmt.Fprintf(os.Stderr, "  skipped: %s\n", describe(s))
 	}
 	for _, f := range failed {
-		fmt.Fprintf(os.Stderr, "  failed:  %s\n", f)
+		fmt.Fprintf(os.Stderr, "  failed:  %s\n", describe(f))
 	}
 	return nil
 }
@@ -351,18 +428,22 @@ func readFindings(path string) (model.FindingsFile, error) {
 	return f, nil
 }
 
-// summariseAttack counts confirmations and collects the human-readable
-// lines for outcomes attack could not act on, the same transparency
-// principle runScan's summarise applies to skipped/failed checks.
-func summariseAttack(outcomes []attack.Outcome) (confirmed int, skipped, failed []string) {
+// summariseAttack counts confirmations and collects the account of outcomes
+// attack could not act on — the same transparency principle runScan's
+// summarise applies, in the stage where "no proof of concept exists for
+// this check" is the most common reason of all.
+func summariseAttack(outcomes []attack.Outcome) (confirmed int, skipped, failed []model.Unexamined) {
 	for _, o := range outcomes {
+		ep := o.Finding.Endpoint
 		switch {
 		case o.Skipped != "":
-			skipped = append(skipped, fmt.Sprintf("%s on %s %s: %s",
-				o.Finding.CheckName, o.Finding.Endpoint.Method, o.Finding.Endpoint.Path, o.Skipped))
+			skipped = append(skipped, model.Unexamined{
+				Check: o.Finding.CheckName, Method: ep.Method, Path: ep.Path, Reason: o.Skipped,
+			})
 		case o.Err != nil:
-			failed = append(failed, fmt.Sprintf("%s on %s %s: %v",
-				o.Finding.CheckName, o.Finding.Endpoint.Method, o.Finding.Endpoint.Path, o.Err))
+			failed = append(failed, model.Unexamined{
+				Check: o.Finding.CheckName, Method: ep.Method, Path: ep.Path, Reason: o.Err.Error(),
+			})
 		case o.Finding.Confirmed:
 			confirmed++
 		}
@@ -435,7 +516,7 @@ func runReport(args []string) error {
 			*outPath, jsonOut)
 	}
 
-	data := report.Build(in.Findings)
+	data := report.Build(in.Findings, in.Coverage)
 
 	var html bytes.Buffer
 	if err := data.WriteHTML(&html); err != nil {

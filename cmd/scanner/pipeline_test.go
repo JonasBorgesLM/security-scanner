@@ -713,7 +713,7 @@ func TestAttack_EmptyFindingsProducesEmptyOutput(t *testing.T) {
 	t.Setenv("SCANNER_IT_PASSWORD", "lab-pass")
 	dir := t.TempDir()
 	findingsPath := filepath.Join(dir, "findings.json")
-	os.WriteFile(findingsPath, []byte(`{"schema_version":1,"findings":[]}`), 0o600)
+	os.WriteFile(findingsPath, []byte(`{"schema_version":2,"coverage":{"endpoints_total":0,"checks_run":0,"skipped":[],"failed":[]},"findings":[]}`), 0o600)
 
 	configPath := writeSQLiConfig(t, dir, "http://127.0.0.1:1")
 	outPath := filepath.Join(dir, "confirmed.json")
@@ -907,4 +907,119 @@ func TestAttack_RequiresAuthButNoAuthConfigured(t *testing.T) {
 	if !strings.Contains(err.Error(), "require authentication") {
 		t.Errorf("error = %q, want it to explain the finding needs auth", err.Error())
 	}
+}
+
+// TestAttack_RejectsSchemaV1 pins the decision behind the version bump.
+// A v1 findings.json carries no coverage block, and there is no honest way
+// to read one: an absent block and a block saying "nothing went unexamined"
+// are indistinguishable, so accepting it would silently reintroduce exactly
+// the confusion the block was added to end. Refusing loudly, with a message
+// that names both versions, is the only outcome that cannot mislead.
+func TestAttack_RejectsSchemaV1(t *testing.T) {
+	t.Setenv("SCANNER_IT_PASSWORD", "lab-pass")
+	dir := t.TempDir()
+	findingsPath := filepath.Join(dir, "findings.json")
+	if err := os.WriteFile(findingsPath, []byte(`{"schema_version":1,"findings":[]}`), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	configPath := writeSQLiConfig(t, dir, "http://127.0.0.1:1")
+	err := runAttack([]string{"--in", findingsPath, "--config", configPath, "--out", filepath.Join(dir, "confirmed.json")})
+	if err == nil {
+		t.Fatal("runAttack() error = nil, want a v1 findings file to be refused")
+	}
+	for _, want := range []string{"schema_version 1", "2"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to mention %q", err, want)
+		}
+	}
+}
+
+// TestPipeline_CoverageSurvivesEveryStage is the end-to-end statement of
+// what schema v2 bought. A route the scanner never examined has to still be
+// visible in the final HTML a human opens — not just on the terminal of the
+// machine that ran scan, which is where it used to die.
+//
+// The spec written by writeSpec carries a DELETE route, so the
+// non-destructive gate produces a genuine unexamined entry without needing
+// to break anything.
+func TestPipeline_CoverageSurvivesEveryStage(t *testing.T) {
+	t.Setenv("SCANNER_IT_PASSWORD", "lab-pass")
+
+	srv, _ := newLabServer(t)
+	dir := t.TempDir()
+	specPath := writeSpec(t, dir)
+	configPath := writeConfig(t, dir, srv.URL)
+
+	findingsPath := filepath.Join(dir, "findings.json")
+	if err := runScan([]string{"--spec", specPath, "--config", configPath, "--out", findingsPath}); err != nil {
+		t.Fatalf("runScan() error = %v", err)
+	}
+
+	// --- scan ---------------------------------------------------------
+	var scanned model.FindingsFile
+	mustReadJSON(t, findingsPath, &scanned)
+
+	if scanned.SchemaVersion != 2 {
+		t.Fatalf("schema_version = %d, want 2", scanned.SchemaVersion)
+	}
+	if scanned.Coverage.EndpointsTotal == 0 || scanned.Coverage.ChecksRun == 0 {
+		t.Errorf("coverage counts = %+v, want both above zero", scanned.Coverage)
+	}
+	held := findUnexamined(scanned.Coverage.Skipped, "DELETE", "/items/{id}")
+	if held == nil {
+		t.Fatalf("the destructive route is absent from coverage.skipped: %+v", scanned.Coverage.Skipped)
+	}
+	if !strings.Contains(held.Reason, "test_destructive") {
+		t.Errorf("reason = %q, want it to name the gate that held the route back", held.Reason)
+	}
+	if held.Check != "" {
+		t.Errorf("check = %q, want empty — the gate decided before any check ran", held.Check)
+	}
+
+	// --- attack -------------------------------------------------------
+	confirmedPath := filepath.Join(dir, "confirmed.json")
+	if err := runAttack([]string{"--in", findingsPath, "--config", configPath, "--out", confirmedPath}); err != nil {
+		t.Fatalf("runAttack() error = %v", err)
+	}
+
+	var attacked model.FindingsFile
+	mustReadJSON(t, confirmedPath, &attacked)
+
+	if findUnexamined(attacked.Coverage.Skipped, "DELETE", "/items/{id}") == nil {
+		t.Error("attack dropped scan's coverage instead of carrying it forward")
+	}
+	if attacked.Coverage.EndpointsTotal != scanned.Coverage.EndpointsTotal {
+		t.Errorf("endpoints_total = %d after attack, want %d unchanged",
+			attacked.Coverage.EndpointsTotal, scanned.Coverage.EndpointsTotal)
+	}
+	if len(attacked.Coverage.Skipped) <= len(scanned.Coverage.Skipped) {
+		t.Errorf("coverage.skipped did not grow through attack (%d -> %d); missing-headers has no PoC and must be accounted for",
+			len(scanned.Coverage.Skipped), len(attacked.Coverage.Skipped))
+	}
+
+	// --- report -------------------------------------------------------
+	htmlPath := filepath.Join(dir, "report.html")
+	if err := runReport([]string{"--in", confirmedPath, "--out", htmlPath}); err != nil {
+		t.Fatalf("runReport() error = %v", err)
+	}
+
+	html, err := os.ReadFile(htmlPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	for _, want := range []string{"Not examined", "/items/{id}", "test_destructive"} {
+		if !strings.Contains(string(html), want) {
+			t.Errorf("report.html does not mention %q — the unexamined route died before reaching the reader", want)
+		}
+	}
+}
+
+func findUnexamined(entries []model.Unexamined, method, path string) *model.Unexamined {
+	for i, e := range entries {
+		if e.Method == method && e.Path == path {
+			return &entries[i]
+		}
+	}
+	return nil
 }
