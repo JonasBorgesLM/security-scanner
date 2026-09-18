@@ -38,7 +38,7 @@ func TestRun_SkippedCheckIsNeitherFindingNorFailure(t *testing.T) {
 			t.Errorf("%s: Err = %v, want nil — a skip is not a failure", r.Endpoint.Path, r.Err)
 		}
 		if len(r.Findings) != 0 {
-			t.Errorf("%s: got %d findings, want 0 — a skip must never become a finding", r.Endpoint.Path, len(r.Findings))
+			t.Errorf("%s: got %d findings, want 0 — this check returned none, and a skip must never invent one", r.Endpoint.Path, len(r.Findings))
 		}
 		if !strings.Contains(r.SkipReason, "no baseline") {
 			t.Errorf("%s: SkipReason = %q, want the check's explanation", r.Endpoint.Path, r.SkipReason)
@@ -254,5 +254,52 @@ func TestCollect_PanicDoesNotKillTheRun(t *testing.T) {
 	}
 	if len(targets) != 2 {
 		t.Errorf("got %d targets, want 2 — the panicking one dropped, the others kept", len(targets))
+	}
+}
+
+// TestRun_SkipCarriesTheFindingsTheCheckDidProduce pins that a skip and a
+// finding are not alternatives.
+//
+// A check that examined three parameters and could not reach a fourth has
+// something to report and something to admit. Keeping only one of them is
+// wrong in one direction or the other: drop the findings and a real
+// vulnerability goes unreported, drop the skip and a partly-examined route
+// reads as a whole one — which is the failure the coverage block exists to
+// end.
+func TestRun_SkipCarriesTheFindingsTheCheckDidProduce(t *testing.T) {
+	partial := &stubCheck{
+		meta: model.CheckMetadata{Name: "partial", Kind: model.KindPassive, Severity: "high"},
+		run: func(ctx context.Context, target model.Target, c ports.HTTPClient) ([]model.Finding, error) {
+			return []model.Finding{{ID: "reachable"}},
+				model.Skippedf("1 of 2 parameter(s) of %s could not be tested", target.Endpoint.Path)
+		},
+	}
+
+	e := newEngine(t, false)
+	results, err := e.Run(t.Context(), e.BuildJobs(targetsFor(endpoints(1)), []model.Check{partial}))
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+
+	if !r.Skipped {
+		t.Error("Skipped = false, want the admission to survive alongside the finding")
+	}
+	if !strings.Contains(r.SkipReason, "could not be tested") {
+		t.Errorf("SkipReason = %q, want the check's explanation", r.SkipReason)
+	}
+	if len(r.Findings) != 1 {
+		t.Fatalf("got %d findings, want the 1 the check produced to survive the skip", len(r.Findings))
+	}
+	// Still enriched: a finding reported alongside a skip is a finding like
+	// any other, and must not reach the report missing its metadata.
+	if got := r.Findings[0]; got.CheckName != "partial" || got.Severity != "high" || got.ID == "reachable" {
+		t.Errorf("finding = %+v, want it enriched with check name, severity and a namespaced ID", got)
+	}
+	if r.Err != nil {
+		t.Errorf("Err = %v, want nil — a partial sweep is not a failure", r.Err)
 	}
 }

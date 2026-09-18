@@ -83,10 +83,13 @@ type Result struct {
 	Endpoint  model.Endpoint
 	CheckName string
 	Findings  []model.Finding
-	// Skipped means the check declined to conclude — no baseline, failed
-	// auth, whatever SkipReason says. It is not a failure and never a
-	// finding, but it must reach the report: a route shown as clean when it
-	// was never examined is worse than one openly marked unexamined.
+	// Skipped means the check could not conclude about some or all of what
+	// it was pointed at — no baseline, failed auth, whatever SkipReason
+	// says. It is not a failure, and it can accompany Findings: a check
+	// that tested three parameters and could not reach a fourth reports
+	// both. It must reach the report either way, since a route shown as
+	// clean when part of it was never examined is worse than one openly
+	// marked incomplete.
 	Skipped    bool
 	SkipReason string
 	// Err means the check could not complete. It is never itself evidence
@@ -340,8 +343,15 @@ func (e *Engine) runJob(ctx context.Context, job Job) (res Result) {
 	findings, err := job.Check.Run(ctx, job.Target, client)
 	switch {
 	case errors.Is(err, model.ErrSkipped):
+		// A skip and a finding are not mutually exclusive. A check that
+		// examined three parameters and could not reach a fourth has both
+		// something to report and something to admit, and dropping either
+		// half is a lie in one direction or the other: discard the findings
+		// and a real vulnerability goes unreported, discard the skip and the
+		// route reads as fully examined.
 		res.Skipped = true
 		res.SkipReason = err.Error()
+		res.Findings = enrich(findings, meta, ep)
 		return res
 	case err != nil:
 		res.Err = fmt.Errorf("engine: check %q on %s %s: %w",

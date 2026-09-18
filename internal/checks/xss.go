@@ -136,26 +136,14 @@ func (c *xssReflected) Run(ctx context.Context, t model.Target, client ports.HTT
 	}
 	origin := &url.URL{Scheme: base.Scheme, Host: base.Host}
 
-	var findings []model.Finding
-	tested := 0
-	var lastErr error
-	for _, target := range params {
-		f, err := c.testParameter(ctx, client, t.Endpoint, origin, params, target)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		tested++
-		if f != nil {
-			findings = append(findings, *f)
-		}
-	}
+	res := runPerParameter(params, func(p model.Parameter) (*model.Finding, error) {
+		return c.testParameter(ctx, client, t.Endpoint, origin, params, p)
+	})
 
-	if tested == 0 {
-		return nil, model.Skippedf("could not test any parameter of %s %s: %v",
-			t.Endpoint.Method, t.Endpoint.Path, lastErr)
-	}
-	return findings, nil
+	// A parameter whose own clean baseline could not be fetched was never
+	// exercised; outcome reports that whether it happened to every
+	// parameter or only to some of them.
+	return res.outcome(t.Endpoint, params)
 }
 
 // testParameter fetches one clean baseline for target (every parameter,
