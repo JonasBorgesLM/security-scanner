@@ -115,3 +115,11 @@ checks:
     # a PoC) and a missing/overlong exp (low, structural). Skips when the
     # token is not a JWT.
     - jwt-weak
+    # Sends one malformed value per parameter, looking for internal detail
+    # (stack traces, raw SQL, filesystem paths) in the response that the
+    # normal response does not contain.
+    - verbose-errors
+    # Plants an external URL in redirect-shaped parameters and reports one
+    # the response would bounce a browser to. Only runs where such a
+    # parameter exists.
+    - open-redirect
