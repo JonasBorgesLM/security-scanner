@@ -167,6 +167,10 @@ type Clients struct {
 	// Default is the identity the scan runs as: authenticated when the
 	// config has an auth block, plain otherwise.
 	Default ports.HTTPClient
+	// Secondary is a second authenticated account, when config.yaml supplies
+	// one. Nil otherwise, and a check that needs it must skip naming the
+	// setting rather than compare a user with itself.
+	Secondary ports.HTTPClient
 	// Anonymous carries no credentials, ever. On a target with no auth
 	// configured it is the same client as Default — which is harmless,
 	// because a check that cares about identity only applies to endpoints

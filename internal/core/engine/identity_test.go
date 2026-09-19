@@ -75,7 +75,7 @@ func TestRun_AnonymousIdentityCarriesNoCredentials(t *testing.T) {
 		},
 	}
 
-	e, err := New(Config{BaseURL: srv.URL, MaxConcurrency: 1, RequestsPerSecond: 1000}, authenticated, http.DefaultClient)
+	e, err := New(Config{BaseURL: srv.URL, MaxConcurrency: 1, RequestsPerSecond: 1000}, authenticated, http.DefaultClient, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -101,7 +101,7 @@ func TestRun_AnonymousIdentityCarriesNoCredentials(t *testing.T) {
 // which credentials a request carried. Two limiters at requests_per_second
 // each would quietly double the load the operator configured.
 func TestNew_BothIdentitiesShareOneRateLimiter(t *testing.T) {
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 10}, &fakeClient{}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 10}, &fakeClient{}, &fakeClient{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
