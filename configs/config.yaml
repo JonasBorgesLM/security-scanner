@@ -68,6 +68,16 @@ engine:
   # DELETE/PUT/PATCH endpoints are skipped unless this is true.
   # Leave it false unless you can restore the lab's state afterwards.
   test_destructive: false
+  # Opt in to sending a request body, which lets the active checks probe
+  # POST routes that require one. Off by default, and separate from
+  # test_destructive on purpose: creating is recoverable and deleting is not,
+  # so wanting coverage on POST should not force switching on DELETE/PUT/PATCH.
+  #
+  # Switching it on means probes start CREATING resources. Against a spec
+  # with five POST routes that take a body, expect a few hundred created
+  # records per scan — and read what those routes do first: a password-change
+  # endpoint probed with a valid body will end the scanner's own session.
+  test_creates: false
 
 checks:
   # Names of registered checks to run.

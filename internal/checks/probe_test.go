@@ -1,11 +1,14 @@
 package checks
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -37,7 +40,7 @@ func TestRunPerParameter_PartialSweepReportsBoth(t *testing.T) {
 		}
 		return &model.Finding{ID: p.Name}, nil
 	})
-	findings, err := res.outcome(ep, ps)
+	findings, err := res.outcome(ep, ps, 0)
 
 	if len(findings) != 1 {
 		t.Fatalf("findings = %d, want the one parameter that could be tested to still be reported", len(findings))
@@ -68,7 +71,7 @@ func TestRunPerParameter_NothingTestableIsAPlainSkip(t *testing.T) {
 	res := runPerParameter(ps, func(model.Parameter) (*model.Finding, error) {
 		return nil, errors.New("refused")
 	})
-	findings, err := res.outcome(ep, ps)
+	findings, err := res.outcome(ep, ps, 0)
 
 	if findings != nil {
 		t.Errorf("findings = %v, want none when nothing could be tested", findings)
@@ -93,7 +96,7 @@ func TestRunPerParameter_FullSweepDoesNotSkip(t *testing.T) {
 		}
 		return nil, nil // tested, nothing found
 	})
-	findings, err := res.outcome(ep, ps)
+	findings, err := res.outcome(ep, ps, 0)
 
 	if err != nil {
 		t.Errorf("err = %v, want nil when every parameter was reachable", err)
@@ -230,6 +233,164 @@ func TestActiveChecks_ValidationRejectingOnlyThePayloadIsAResult(t *testing.T) {
 			}
 			if len(findings) != 0 {
 				t.Errorf("got %d findings, want 0 — validation refused every payload", len(findings))
+			}
+		})
+	}
+}
+
+// ------------------------------------------------------- the creates gate
+
+func bodyParam(name, typ string) model.Parameter {
+	return model.Parameter{Name: name, In: "body", Type: typ}
+}
+
+// TestUsableParameters_BodyNeedsTheCreatesGate is the gate itself. Sending
+// a body means the target starts CREATING things instead of refusing the
+// request at validation — measured against the task-api, roughly 260 POSTs
+// per scan, including account registrations and password changes that would
+// end the scanner's own session.
+func TestUsableParameters_BodyNeedsTheCreatesGate(t *testing.T) {
+	ep := model.Endpoint{
+		Method: "POST", Path: "/tasks",
+		Parameters: []model.Parameter{queryParam("q"), bodyParam("title", "string")},
+	}
+
+	off, heldBack := usableParameters(model.Target{Endpoint: ep, CanCreate: false})
+	if len(off) != 1 || off[0].Name != "q" {
+		t.Errorf("usable with the gate off = %v, want only the query parameter", off)
+	}
+	if heldBack != 1 {
+		t.Errorf("heldBack = %d, want 1 — the body parameter must be counted, not forgotten", heldBack)
+	}
+
+	on, heldBack := usableParameters(model.Target{Endpoint: ep, CanCreate: true})
+	if len(on) != 2 {
+		t.Errorf("usable with the gate on = %v, want both", on)
+	}
+	if heldBack != 0 {
+		t.Errorf("heldBack = %d, want 0", heldBack)
+	}
+}
+
+// TestInjectableParameters_OnlyStringBodyProperties keeps a payload out of
+// a field that cannot hold one. A payload is a string, so putting it in an
+// integer or boolean property produces a body the target rejects as
+// malformed — which looks exactly like a well defended route while nothing
+// was ever tested.
+func TestInjectableParameters_OnlyStringBodyProperties(t *testing.T) {
+	ep := model.Endpoint{
+		Method: "POST", Path: "/tasks",
+		Parameters: []model.Parameter{
+			bodyParam("title", "string"),
+			bodyParam("untyped", ""),
+			bodyParam("priority", "integer"),
+			bodyParam("done", "boolean"),
+			bodyParam("tags", "array"),
+		},
+	}
+
+	var got []string
+	for _, p := range injectableParameters(ep) {
+		got = append(got, p.Name)
+	}
+	if want := []string{"title", "untyped"}; !slices.Equal(got, want) {
+		t.Errorf("injectable = %v, want %v — only properties a string payload fits", got, want)
+	}
+}
+
+// TestBuildProbeRequest_FillsEveryDeclaredBodyProperty guards the half of
+// body synthesis that is easy to miss: a schema requiring an integer field
+// still requires it while a string field is being probed, and a body
+// missing it is refused before reaching anything.
+func TestBuildProbeRequest_FillsEveryDeclaredBodyProperty(t *testing.T) {
+	ep := model.Endpoint{
+		Method: "POST", Path: "/tasks",
+		Parameters: []model.Parameter{
+			bodyParam("title", "string"),
+			bodyParam("priority", "integer"),
+			bodyParam("done", "boolean"),
+		},
+	}
+	origin, _ := url.Parse("http://lab.test")
+
+	req, err := buildProbeRequest(t.Context(), ep, origin,
+		injectableParameters(ep), bodyParam("title", "string"), "PAYLOAD")
+	if err != nil {
+		t.Fatalf("buildProbeRequest() error = %v", err)
+	}
+	if got := req.Header.Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+
+	raw, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("the synthesised body is not valid JSON: %v (%s)", err, raw)
+	}
+
+	if body["title"] != "PAYLOAD" {
+		t.Errorf("title = %v, want the payload", body["title"])
+	}
+	if body["priority"] != float64(1) {
+		t.Errorf("priority = %#v, want the integer filler — the wrong JSON type makes the target reject the whole body", body["priority"])
+	}
+	if body["done"] != false {
+		t.Errorf("done = %#v, want the boolean filler", body["done"])
+	}
+}
+
+// TestBuildProbeRequest_NoBodyParamsMeansNoBody pins the default footprint:
+// an endpoint with nothing in its body sends nothing, exactly as every
+// probe did before bodies were supported.
+func TestBuildProbeRequest_NoBodyParamsMeansNoBody(t *testing.T) {
+	ep := model.Endpoint{Method: "GET", Path: "/items", Parameters: []model.Parameter{queryParam("q")}}
+	origin, _ := url.Parse("http://lab.test")
+
+	req, err := buildProbeRequest(t.Context(), ep, origin, injectableParameters(ep), queryParam("q"), "x")
+	if err != nil {
+		t.Fatalf("buildProbeRequest() error = %v", err)
+	}
+	if req.Body != nil {
+		t.Error("a request was built with a body for an endpoint that declares none")
+	}
+	if got := req.Header.Get("Content-Type"); got != "" {
+		t.Errorf("Content-Type = %q, want none", got)
+	}
+}
+
+// TestActiveChecks_BodyOnlyRouteIsHeldBackNotCleared is the honesty half.
+// With the gate off, a POST route whose only injectable input is its body
+// must say it was held back — reporting it as clean would be the silent
+// false-clean this project spent stage 1 removing.
+func TestActiveChecks_BodyOnlyRouteIsHeldBackNotCleared(t *testing.T) {
+	ep := model.Endpoint{Method: "POST", Path: "/tasks", Parameters: []model.Parameter{bodyParam("title", "string")}}
+	target := model.Target{
+		Endpoint:  ep,
+		CanCreate: false,
+		Baseline:  &model.Response{URL: "http://lab.test/tasks", StatusCode: 405, ProbedMethod: "GET"},
+	}
+
+	for _, tt := range []struct {
+		name  string
+		check model.Check
+	}{
+		{"sqli-boolean", sqliCheck()},
+		{"xss-reflected", &xssReflected{templates: xssMarkerTemplates}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			findings, err := tt.check.Run(t.Context(), target, model.Clients{Default: http.DefaultClient})
+
+			if len(findings) != 0 {
+				t.Errorf("got %d findings, want 0", len(findings))
+			}
+			if !errors.Is(err, model.ErrSkipped) {
+				t.Fatalf("err = %v, want a skip naming the gate", err)
+			}
+			if !strings.Contains(err.Error(), "engine.test_creates") {
+				t.Errorf("reason = %q, want it to name the setting that held the route back", err)
 			}
 		})
 	}

@@ -81,6 +81,16 @@ type Target struct {
 	// as evidence of anything.
 	Baseline    *Response
 	BaselineErr error
+	// CanCreate is the run's engine.test_creates setting, stamped here so a
+	// check can see it. It rides on the Target rather than reaching the
+	// check some other way because a check must be able to SAY it was held
+	// back — the alternative is declining silently, which is the whole
+	// class of failure stage 1 removed.
+	//
+	// False means: do not send a request body. Body parameters are then not
+	// injectable, and a check with nothing else to inject reports a skip
+	// naming the setting.
+	CanCreate bool
 }
 
 // CheckMetadata describes a check for registry lookup and engine

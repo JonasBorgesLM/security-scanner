@@ -2,9 +2,12 @@ package checks
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -156,22 +159,63 @@ func (c *sqliBoolean) Metadata() model.CheckMetadata {
 	}
 }
 
-// injectableParameters returns the query and path parameters of an
-// endpoint. Header and body injection are out of scope for this check —
-// query/path covers the common case, and body injection needs to know the
-// shape of the payload, not just a string to substitute.
+// injectableParameters returns everything an active check could inject
+// into: query and path parameters always, and string-typed body properties
+// as well. Headers stay out of scope.
+//
+// Body properties are only injectable when they are strings. A payload is a
+// string, so putting one in an integer or boolean field produces a body the
+// target rejects as malformed — which would look exactly like the route
+// being well defended while nothing was ever actually tested.
+//
+// Whether the body ones may be USED is a separate question, answered per
+// run by Target.CanCreate: sending a body means the target starts creating
+// resources instead of refusing the request at validation. usableParameters
+// applies that; this function reports what exists so a check can tell the
+// difference between "nothing to inject" and "held back".
 func injectableParameters(ep model.Endpoint) []model.Parameter {
 	var out []model.Parameter
 	for _, p := range ep.Parameters {
-		if p.In == "query" || p.In == "path" {
+		switch p.In {
+		case "query", "path":
 			out = append(out, p)
+		case "body":
+			if p.Type == "string" || p.Type == "" {
+				out = append(out, p)
+			}
 		}
 	}
 	return out
 }
 
+// usableParameters narrows injectableParameters to what this run is allowed
+// to touch. It also reports whether anything was held back, so the caller
+// can say so instead of reporting a route it never probed as clean.
+func usableParameters(t model.Target) (usable []model.Parameter, heldBack int) {
+	for _, p := range injectableParameters(t.Endpoint) {
+		if p.In == "body" && !t.CanCreate {
+			heldBack++
+			continue
+		}
+		usable = append(usable, p)
+	}
+	return usable, heldBack
+}
+
+// heldBackByCreates is the skip a check returns when the only thing it
+// could have injected into was a request body and the run did not opt in.
+func heldBackByCreates(ep model.Endpoint, n int) error {
+	return model.Skippedf(
+		"%d body parameter(s) of %s %s were not probed because engine.test_creates is not set; "+
+			"sending a body to this route would create resources on the target",
+		n, ep.Method, ep.Path)
+}
+
 func (c *sqliBoolean) Run(ctx context.Context, t model.Target, clients model.Clients) ([]model.Finding, error) {
-	params := injectableParameters(t.Endpoint)
+	params, heldBack := usableParameters(t)
+	if len(params) == 0 && heldBack > 0 {
+		return nil, heldBackByCreates(t.Endpoint, heldBack)
+	}
 	if len(params) == 0 {
 		// AppliesTo should already have kept this job from being created;
 		// staying correct here too costs nothing.
@@ -195,7 +239,7 @@ func (c *sqliBoolean) Run(ctx context.Context, t model.Target, clients model.Cli
 	// exercised, so nothing can be concluded about it — not even "clean".
 	// outcome reports that whether it happened to every parameter or only
 	// to some of them.
-	return res.outcome(t.Endpoint, params)
+	return res.outcome(t.Endpoint, params, heldBack)
 }
 
 // testParameter measures the noise floor for one parameter and then tries
@@ -338,6 +382,7 @@ func buildProbeRequest(
 ) (*http.Request, error) {
 	path := ep.Path
 	query := url.Values{}
+	body := map[string]any{}
 
 	for _, p := range all {
 		v := sqliProbeFiller
@@ -349,6 +394,20 @@ func buildProbeRequest(
 			path = strings.Replace(path, "{"+p.Name+"}", url.PathEscape(v), 1)
 		case "query":
 			query.Set(p.Name, v)
+		case "body":
+			body[p.Name] = v
+		}
+	}
+	// Every declared body property, not only the injectable ones: a schema
+	// that requires an integer field still requires it while a string field
+	// is being probed, and a body missing it is refused before reaching
+	// anything.
+	for _, p := range ep.Parameters {
+		if p.In != "body" {
+			continue
+		}
+		if _, set := body[p.Name]; !set {
+			body[p.Name] = fillerForType(p.Type)
 		}
 	}
 
@@ -357,11 +416,45 @@ func buildProbeRequest(
 		full += "?" + q
 	}
 
-	req, err := http.NewRequestWithContext(ctx, ep.Method, full, nil)
+	// No body params means no body at all, which is what every probe looked
+	// like before request bodies were supported. A route that needs one is
+	// only reached when the run opted in (see usableParameters).
+	var payload io.Reader
+	if len(body) > 0 {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("checks: building request body for %s %s: %w", ep.Method, ep.Path, err)
+		}
+		payload = bytes.NewReader(encoded)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, ep.Method, full, payload)
 	if err != nil {
 		return nil, fmt.Errorf("checks: sqli: building request for %s %s: %w", ep.Method, ep.Path, err)
 	}
+	if payload != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	return req, nil
+}
+
+// fillerForType produces an inert value of the right JSON type for a body
+// property nothing is being injected into. The wrong type is not a neutral
+// choice: it makes the target reject the whole body, and a check comparing
+// two rejections learns nothing.
+func fillerForType(schemaType string) any {
+	switch schemaType {
+	case "integer", "number":
+		return 1
+	case "boolean":
+		return false
+	case "array":
+		return []any{sqliProbeFiller}
+	case "object":
+		return map[string]any{}
+	default:
+		return sqliProbeFiller
+	}
 }
 
 func absInt(n int) int {

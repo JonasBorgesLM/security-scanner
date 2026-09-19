@@ -123,6 +123,14 @@ type Engine struct {
 	// incomplete. Optional; cmd/scanner supplies a default when unset.
 	RequestTimeout  Duration `yaml:"request_timeout"`
 	TestDestructive bool     `yaml:"test_destructive"`
+	// TestCreates opts in to sending a request body, which lets active
+	// checks probe POST routes that require one — and means those probes
+	// start creating resources instead of being refused at validation.
+	//
+	// Separate from TestDestructive on purpose: creating is recoverable and
+	// deleting is not, so wanting coverage on POST should not force
+	// switching on DELETE/PUT/PATCH probing as well.
+	TestCreates bool `yaml:"test_creates"`
 }
 
 // Checks lists which registered checks (see internal/checks) run.

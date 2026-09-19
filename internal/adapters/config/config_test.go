@@ -332,3 +332,41 @@ func TestLoad_MissingEnvVarIsStillMatchableByType(t *testing.T) {
 		t.Error("MissingVarsError.Names is empty, want the offending variable named")
 	}
 }
+
+// TestLoad_TestCreatesIsOptionalAndOffByDefault pins the default that keeps
+// the scanner's footprint what it has always been. The flag lets active
+// checks send a request body, which means probes start creating resources
+// on the target instead of being refused at validation — the kind of change
+// that must never happen because someone omitted a line.
+func TestLoad_TestCreatesIsOptionalAndOffByDefault(t *testing.T) {
+	t.Setenv("SCANNER_TEST_LAB_PASSWORD", "irrelevant-to-this-test")
+
+	cfg, err := Load("testdata/config.yaml")
+	if err != nil {
+		t.Fatalf("Load() unexpected error = %v", err)
+	}
+	if cfg.Engine.TestCreates {
+		t.Error("TestCreates = true with the key absent; creating resources must be opt-in")
+	}
+
+	cfg, err = Load("testdata/test-creates.yaml")
+	if err != nil {
+		t.Fatalf("Load() unexpected error = %v", err)
+	}
+	if !cfg.Engine.TestCreates {
+		t.Error("TestCreates = false when the file sets it to true")
+	}
+}
+
+// TestLoad_TestCreatesIsIndependentOfTestDestructive guards the distinction
+// the two flags exist to keep: creating is recoverable and deleting is not,
+// so one must never imply the other.
+func TestLoad_TestCreatesIsIndependentOfTestDestructive(t *testing.T) {
+	cfg, err := Load("testdata/test-creates.yaml")
+	if err != nil {
+		t.Fatalf("Load() unexpected error = %v", err)
+	}
+	if cfg.Engine.TestDestructive {
+		t.Error("TestDestructive = true from a file that only set test_creates; wanting POST coverage must not switch on DELETE probing")
+	}
+}
