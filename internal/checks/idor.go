@@ -70,7 +70,17 @@ func (c *idor) Metadata() model.CheckMetadata {
 			// Only a safe method: reading someone else's resource is the
 			// whole proof, and writing to it would be the thing this
 			// project refuses to do.
-			return ep.Method == http.MethodGet && trailingPathParam.MatchString(ep.Path)
+			if ep.Method != http.MethodGet {
+				return false
+			}
+			m := trailingPathParam.FindStringSubmatch(ep.Path)
+			// The collection path is everything before the trailing /{id}.
+			// If IT still contains a template parameter — a nested detail
+			// route like /users/{uid}/posts/{pid} — there is no single
+			// concrete collection to list, so the check would GET a literal
+			// "{uid}" path and skip on a confusing error. Leave those to a
+			// future version rather than pretend to handle them.
+			return m != nil && !strings.Contains(m[1], "{")
 		},
 	}
 }

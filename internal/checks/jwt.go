@@ -122,14 +122,37 @@ func (c *jwtWeak) checkExpiry(claims map[string]any) *model.Finding {
 		}
 	}
 
-	lifetime := time.Until(time.Unix(int64(exp), 0))
-	if lifetime > maxExpSeconds*time.Second {
+	expiry := time.Unix(int64(exp), 0).UTC()
+
+	// Prefer the token's DESIGNED lifetime, exp - iat, which is a property
+	// of the token and the same on every scan. Falling back to time-until-
+	// expiry would make the same token flip between long-exp and clean
+	// depending on the hour it was scanned — a finding that appears and
+	// disappears with the wall clock, which is exactly what invariant 8
+	// bans. When iat is absent that flip is unavoidable, so the decision
+	// then rests on remaining lifetime and the evidence says which basis it
+	// used.
+	if iat, ok := claims["iat"].(float64); ok {
+		lifetime := time.Duration(int64(exp)-int64(iat)) * time.Second
+		if lifetime > maxExpSeconds*time.Second {
+			return &model.Finding{
+				ID:       "long-exp",
+				Severity: "low",
+				Evidence: model.Evidence{ResponseSnippet: fmt.Sprintf(
+					"the token is issued with a lifetime of about %d hours (iat to exp); past a day, a leaked copy stays useful long enough that the lifetime is itself the exposure",
+					int(lifetime.Hours()))},
+			}
+		}
+		return nil
+	}
+
+	if time.Until(expiry) > maxExpSeconds*time.Second {
 		return &model.Finding{
 			ID:       "long-exp",
 			Severity: "low",
 			Evidence: model.Evidence{ResponseSnippet: fmt.Sprintf(
-				"the session token is valid for about %d hours; past a day, a leaked copy stays useful long enough that the lifetime is itself the exposure",
-				int(lifetime.Hours()))},
+				"the token expires at %s, more than a day out, and carries no iat to bound when it was issued; a leaked copy stays useful long enough that the lifetime is itself the exposure",
+				expiry.Format(time.RFC3339))},
 		}
 	}
 	return nil

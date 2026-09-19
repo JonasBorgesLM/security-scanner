@@ -208,3 +208,46 @@ func TestJWTWeak_NoTokenIsASkip(t *testing.T) {
 		t.Errorf("err = %v, want a skip when no token is available", err)
 	}
 }
+
+// TestJWTWeak_ExpiryVerdictDoesNotDependOnScanTime is the determinism fix.
+// A token's designed lifetime (iat to exp) is a property of the token, so
+// the same token must yield the same verdict whenever it is scanned — not
+// flip between long-exp and clean as the wall clock moves toward exp.
+func TestJWTWeak_ExpiryVerdictDoesNotDependOnScanTime(t *testing.T) {
+	srv := newJWTServer(t, false) // rejects forgery, so only exp can fire
+
+	// Issued 2h ago, expires in 2h: a 4h designed lifetime. That is short,
+	// so it is clean — and stays clean no matter that only 2h remain.
+	now := time.Now().Unix()
+	claims := map[string]any{"sub": "1", "iat": float64(now - 2*3600), "exp": float64(now + 2*3600)}
+	target, clients := jwtTarget(srv, makeJWT("HS256", claims))
+
+	findings, err := (&jwtWeak{}).Run(t.Context(), target, clients)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	for _, f := range findings {
+		if f.ID == "long-exp" {
+			t.Error("a 4h token flagged long-exp because only 2h remain; the verdict must rest on iat-to-exp, not time-until-exp")
+		}
+	}
+
+	// A genuinely long-lived token: 48h from iat to exp. long-exp, and its
+	// evidence names the designed lifetime, not a from-now countdown.
+	claims["exp"] = float64(now - 2*3600 + 48*3600)
+	target, clients = jwtTarget(srv, makeJWT("HS256", claims))
+	findings, _ = (&jwtWeak{}).Run(t.Context(), target, clients)
+
+	var long *model.Finding
+	for i := range findings {
+		if findings[i].ID == "long-exp" {
+			long = &findings[i]
+		}
+	}
+	if long == nil {
+		t.Fatal("a 48h-lifetime token was not flagged long-exp")
+	}
+	if !strings.Contains(long.Evidence.ResponseSnippet, "lifetime of about 48 hours") {
+		t.Errorf("evidence = %q, want the designed lifetime, which is stable across runs", long.Evidence.ResponseSnippet)
+	}
+}
