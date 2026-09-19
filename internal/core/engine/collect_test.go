@@ -118,13 +118,21 @@ func TestCollect_CapturesOneBaselinePerEndpoint(t *testing.T) {
 	}
 }
 
-// dedupe collapses consecutive identical requests, so an assertion about
-// WHICH URLs collection built is not also an assertion about how many
-// probes it sends each of them.
-func dedupe(in []string) []string {
+// distinct returns the unique values in in, so an assertion about WHICH
+// URLs collection built is not also an assertion about how many probes it
+// sends each of them.
+//
+// It deduplicates by set membership rather than by collapsing adjacent
+// repeats: the pool collects concurrently, so a route's baseline and its
+// probe are not guaranteed to land next to each other in the record. An
+// earlier version assumed they would and passed locally on the ordering it
+// happened to get, then failed in CI on a different one.
+func distinct(in []string) []string {
+	seen := make(map[string]bool, len(in))
 	var out []string
 	for _, s := range in {
-		if len(out) == 0 || out[len(out)-1] != s {
+		if !seen[s] {
+			seen[s] = true
 			out = append(out, s)
 		}
 	}
@@ -145,8 +153,8 @@ func TestCollect_SubstitutesPathParameters(t *testing.T) {
 		"GET http://lab.invalid/users/1/posts/1",
 	}
 	// This test is about WHICH URLs collection built, not how many probes
-	// it sends each of them, so identical consecutive requests collapse.
-	got := dedupe(client.seen())
+	// it sends each of them, so repeats collapse.
+	got := distinct(client.seen())
 	slices.Sort(got)
 	slices.Sort(want)
 	if strings.Join(got, "|") != strings.Join(want, "|") {
