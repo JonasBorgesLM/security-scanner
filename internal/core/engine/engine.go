@@ -73,6 +73,11 @@ type Config struct {
 	// default, and stamped onto every Target as CanCreate so a check can
 	// say so rather than silently declining.
 	TestCreates bool
+	// SessionToken is the credential Default authenticates with, passed
+	// through to Clients.SessionToken for the one check that inspects it.
+	// Empty when the target needs no auth. Config is never serialised, so
+	// the secret does not reach disk by sitting here.
+	SessionToken string
 }
 
 // Job is one check to run against one target — the unit the worker pool
@@ -154,7 +159,8 @@ func New(cfg Config, client, anonymous, secondary ports.HTTPClient) (*Engine, er
 			// Nil stays nil: a check must be able to tell "no second
 			// account was configured" from "here is one", and wrapping nil
 			// in a limiter would hand it a client that panics on use.
-			Secondary: rateLimitIfPresent(secondary, limiter),
+			Secondary:    rateLimitIfPresent(secondary, limiter),
+			SessionToken: cfg.SessionToken,
 		},
 	}, nil
 }
@@ -667,15 +673,16 @@ func rateLimitIfPresent(inner ports.HTTPClient, limiter *rate.Limiter) ports.HTT
 // rule cannot be got wrong by a caller assembling them separately: there is
 // one limiter here, as there is inside New, because the target does not
 // care which credentials a request carried.
-func NewRateLimitedClients(client, anonymous, secondary ports.HTTPClient, requestsPerSecond float64, burst int) model.Clients {
+func NewRateLimitedClients(client, anonymous, secondary ports.HTTPClient, sessionToken string, requestsPerSecond float64, burst int) model.Clients {
 	if burst < 1 {
 		burst = 1
 	}
 	limiter := rate.NewLimiter(rate.Limit(requestsPerSecond), burst)
 	return model.Clients{
-		Default:   &rateLimitedClient{inner: client, limiter: limiter},
-		Anonymous: &rateLimitedClient{inner: anonymous, limiter: limiter},
-		Secondary: rateLimitIfPresent(secondary, limiter),
+		Default:      &rateLimitedClient{inner: client, limiter: limiter},
+		Anonymous:    &rateLimitedClient{inner: anonymous, limiter: limiter},
+		Secondary:    rateLimitIfPresent(secondary, limiter),
+		SessionToken: sessionToken,
 	}
 }
 

@@ -111,3 +111,7 @@ checks:
     - dangerous-http-methods
     # Needs auth.secondary_credentials; skips with that reason when absent.
     - idor
+    # Inspects the scanner's own token: alg:none acceptance (critical, with
+    # a PoC) and a missing/overlong exp (low, structural). Skips when the
+    # token is not a JWT.
+    - jwt-weak

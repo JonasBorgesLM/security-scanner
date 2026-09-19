@@ -11,11 +11,23 @@ package attack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
 )
+
+// ErrNoProofOfConcept is what a Confirmer returns for a finding that is a
+// structural fact rather than a suspicion — nothing is reproduced because
+// there is nothing to reproduce. attack treats it as skipped, not failed:
+// the finding was already true when scan wrote it.
+//
+// It exists because one check can produce both kinds. jwt-weak proves
+// alg:none by replaying a forgery, but reads a missing exp straight off the
+// token; the second has no PoC, and saying so is more honest than leaving
+// it Confirmed: false, which reads as "suspected, unproven".
+var ErrNoProofOfConcept = errors.New("attack: finding is structural, nothing to reproduce")
 
 // Confirmer attempts a non-destructive proof of concept for one check's
 // findings. Confirm returns the Finding as it should be written to
@@ -125,7 +137,10 @@ func attemptOne(ctx context.Context, f model.Finding, clients model.Clients) Out
 	}
 
 	confirmed, err := c.Confirm(ctx, f, clients)
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrNoProofOfConcept):
+		return Outcome{Finding: f, Skipped: err.Error()}
+	case err != nil:
 		return Outcome{Finding: f, Err: fmt.Errorf("attack: confirming %s on %s %s: %w",
 			f.CheckName, f.Endpoint.Method, f.Endpoint.Path, err)}
 	}

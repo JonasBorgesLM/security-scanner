@@ -180,6 +180,13 @@ func runScan(args []string) error {
 		scanClient = authenticator
 	}
 
+	// The token jwt-weak inspects. Only the Authenticator has it, and only
+	// when the target needed one; a plain client authenticates with nothing.
+	sessionToken := ""
+	if a, ok := scanClient.(*auth.Authenticator); ok {
+		sessionToken = a.Token()
+	}
+
 	// `client` is the ScopeGuard-enforcing client with no Authenticator
 	// above it, so it is exactly the anonymous identity: same boundary, same
 	// timeout, no credentials. Passing it here rather than building a second
@@ -193,7 +200,9 @@ func runScan(args []string) error {
 		return err
 	}
 
-	eng, err := engine.New(engineConfig(cfg), scanClient, client, secondary)
+	engCfg := engineConfig(cfg)
+	engCfg.SessionToken = sessionToken
+	eng, err := engine.New(engCfg, scanClient, client, secondary)
 	if err != nil {
 		return err
 	}
@@ -436,7 +445,11 @@ func runAttack(args []string) error {
 	if err != nil {
 		return err
 	}
-	clients := engine.NewRateLimitedClients(attackClient, client, secondary, cfg.Engine.RequestsPerSecond, cfg.Engine.Burst)
+	attackToken := ""
+	if a, ok := attackClient.(*auth.Authenticator); ok {
+		attackToken = a.Token()
+	}
+	clients := engine.NewRateLimitedClients(attackClient, client, secondary, attackToken, cfg.Engine.RequestsPerSecond, cfg.Engine.Burst)
 
 	destructive := countDestructiveFindings(in.Findings)
 	fmt.Fprintf(os.Stderr, "target:     %s\n", cfg.Target.BaseURL)

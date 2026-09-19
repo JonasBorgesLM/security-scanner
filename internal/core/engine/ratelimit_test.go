@@ -110,7 +110,7 @@ func TestRun_BurstAllowsAnInitialBatch(t *testing.T) {
 
 func TestNewRateLimitedClient_PacesRequests(t *testing.T) {
 	client := &fakeClient{}
-	rl := NewRateLimitedClients(client, client, nil, 20, 1).Default
+	rl := NewRateLimitedClients(client, client, nil, "", 20, 1).Default
 
 	start := time.Now()
 	for range 3 {
@@ -132,7 +132,7 @@ func TestNewRateLimitedClient_DefaultsBurstToOne(t *testing.T) {
 	// Burst 0 must not panic or produce an unlimited limiter; it should
 	// behave the same as New's own default of 1.
 	client := &fakeClient{}
-	rl := NewRateLimitedClients(client, client, nil, 1000, 0).Default
+	rl := NewRateLimitedClients(client, client, nil, "", 1000, 0).Default
 
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://lab.invalid/x", nil)
 	if _, err := rl.Do(req); err != nil {
