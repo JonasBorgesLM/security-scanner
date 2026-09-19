@@ -234,7 +234,47 @@ func (e *Engine) collectOne(ctx context.Context, ep model.Endpoint) model.Target
 		Body:         body,
 		ProbedMethod: method,
 	}
+
+	// Nothing to learn from varying a request against a route that is not
+	// there, and every probe aimed at one is traffic spent on nothing.
+	if !AbsentFromTarget(target) {
+		target.Probes = e.collectProbes(ctx, ep, method, probedURL)
+	}
 	return target
+}
+
+// collectProbes gathers the extra safe responses for one endpoint.
+//
+// A probe that fails is left nil rather than recorded as an error: a check
+// that needs one skips, with its own reason, and a transport failure on a
+// variation says nothing about the endpoint the baseline already reached.
+func (e *Engine) collectProbes(ctx context.Context, ep model.Endpoint, method, probedURL string) model.Probes {
+	req, err := http.NewRequestWithContext(ctx, method, probedURL, nil)
+	if err != nil {
+		return model.Probes{}
+	}
+	req.Header.Set("Origin", model.ProbeOrigin)
+
+	resp, err := e.clients.Default.Do(req)
+	if err != nil {
+		return model.Probes{}
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	if err != nil {
+		return model.Probes{}
+	}
+
+	return model.Probes{
+		Origin: &model.Response{
+			URL:          probedURL,
+			StatusCode:   resp.StatusCode,
+			Headers:      resp.Header.Clone(),
+			Body:         body,
+			ProbedMethod: method,
+		},
+	}
 }
 
 // baselineMethod returns the method to probe an endpoint with: its own when

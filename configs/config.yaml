@@ -95,3 +95,6 @@ checks:
     # Reports authenticated responses a cache may keep. Passive: it reads the
     # Cache-Control of the baseline that was already collected.
     - cache-on-authenticated
+    # Reads the origin probe collection gathers. Note the inverted logic:
+    # a route with no CORS headers is SECURE and produces no finding.
+    - cors-misconfigured
