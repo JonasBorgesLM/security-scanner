@@ -172,7 +172,11 @@ func TestIDOR_AppliesOnlyToSafeDetailRoutes(t *testing.T) {
 		want         bool
 	}{
 		{"GET", "/tasks/{id}", true},
-		{"GET", "/v1/users/{uid}/posts/{pid}", true},
+		{"GET", "/v1/tasks/{id}", true},
+		// A nested detail route has no single concrete collection to list —
+		// the collection path still holds {uid} — so it is left alone
+		// rather than probed on a literal "{uid}" path.
+		{"GET", "/v1/users/{uid}/posts/{pid}", false},
 		{"GET", "/tasks", false},
 		{"GET", "/tasks/{id}/attachments", false},
 		{"DELETE", "/tasks/{id}", false},
