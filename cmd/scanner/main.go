@@ -103,7 +103,7 @@ func usage() {
 Usage:
   scanner scan   --spec openapi.yaml --config config.yaml --out findings.json
   scanner attack --in findings.json  --config config.yaml --out confirmed.json
-  scanner report --in confirmed.json --out report.html [--json report.json]
+  scanner report --in confirmed.json --out report.html [--json report.json] [--sarif report.sarif]
   scanner diff   before.json after.json [--fail-on high]
 
 Only ever point this at infrastructure you own or are authorised to test.
@@ -559,6 +559,7 @@ func runReport(args []string) error {
 	inPath := fs.String("in", "", "path to confirmed.json (required)")
 	outPath := fs.String("out", "report.html", "path to write the HTML report")
 	jsonPath := fs.String("json", "", "path to write the JSON report (default: --out with its extension replaced by .json)")
+	sarifPath := fs.String("sarif", "", "path to write a SARIF 2.1.0 report (optional; for GitHub Code Scanning)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -602,8 +603,23 @@ func runReport(args []string) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "wrote %s and %s (%d findings, %d confirmed)\n",
-		*outPath, jsonOut, data.Summary.TotalFindings, data.Summary.TotalConfirmed)
+	written := []string{*outPath, jsonOut}
+	if *sarifPath != "" {
+		if samePath(*sarifPath, *outPath) || samePath(*sarifPath, jsonOut) {
+			return fmt.Errorf("report: --sarif (%s) collides with another output path", *sarifPath)
+		}
+		var sarif bytes.Buffer
+		if err := data.WriteSARIF(&sarif); err != nil {
+			return fmt.Errorf("report: render %s: %w", *sarifPath, err)
+		}
+		if err := writeFile(*sarifPath, sarif.Bytes()); err != nil {
+			return err
+		}
+		written = append(written, *sarifPath)
+	}
+
+	fmt.Fprintf(os.Stderr, "wrote %s (%d findings, %d confirmed)\n",
+		strings.Join(written, ", "), data.Summary.TotalFindings, data.Summary.TotalConfirmed)
 	return nil
 }
 
