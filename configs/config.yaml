@@ -98,3 +98,7 @@ checks:
     # Reads the origin probe collection gathers. Note the inverted logic:
     # a route with no CORS headers is SECURE and produces no finding.
     - cors-misconfigured
+    # Sends one TRACE per endpoint, anonymously. Low severity on purpose:
+    # Cross-Site Tracing has not been reachable since browsers stopped
+    # letting script issue TRACE — what is left is information disclosure.
+    - dangerous-http-methods
