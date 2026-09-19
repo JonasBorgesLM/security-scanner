@@ -30,6 +30,7 @@ import (
 	"github.com/JonasBorgesLM/security-scanner/internal/core/engine"
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
 	"github.com/JonasBorgesLM/security-scanner/internal/core/scope"
+	"github.com/JonasBorgesLM/security-scanner/internal/diff"
 	"github.com/JonasBorgesLM/security-scanner/internal/ports"
 	"github.com/JonasBorgesLM/security-scanner/internal/report"
 )
@@ -68,6 +69,8 @@ func main() {
 		err = runAttack(os.Args[2:])
 	case "report":
 		err = runReport(os.Args[2:])
+	case "diff":
+		err = runDiff(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -77,11 +80,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	// A regression is a result, not a failure of the tool, so it gets its
+	// own exit code and no "scanner:" error line. A CI step can then tell
+	// "the comparison found something" from "the comparison broke".
+	if errors.Is(err, errRegressed) {
+		os.Exit(2)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "scanner: %v\n", err)
 		os.Exit(1)
 	}
 }
+
+// errRegressed is returned by runDiff when the comparison found something
+// worse. Returning it rather than calling os.Exit keeps runDiff callable
+// from a test, which a function that ends the process is not.
+var errRegressed = errors.New("diff: the newer run is worse")
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `scanner - security scanner for lab APIs
@@ -90,6 +104,7 @@ Usage:
   scanner scan   --spec openapi.yaml --config config.yaml --out findings.json
   scanner attack --in findings.json  --config config.yaml --out confirmed.json
   scanner report --in confirmed.json --out report.html [--json report.json]
+  scanner diff   before.json after.json [--fail-on high]
 
 Only ever point this at infrastructure you own or are authorised to test.
 Hosts outside scope.allowed_hosts in config.yaml are rejected before any
@@ -589,6 +604,43 @@ func runReport(args []string) error {
 
 	fmt.Fprintf(os.Stderr, "wrote %s and %s (%d findings, %d confirmed)\n",
 		*outPath, jsonOut, data.Summary.TotalFindings, data.Summary.TotalConfirmed)
+	return nil
+}
+
+// runDiff compares two stage files and reports what changed. Unlike every
+// other subcommand it writes its result to stdout: the output is the
+// product, and a CI job wants to pipe it.
+//
+// It exits non-zero when something got worse, which is what makes it usable
+// as a gate. "Worse" deliberately includes coverage that used to exist and
+// no longer does — a run that examines less than the one before it has
+// regressed even when its findings list is shorter.
+func runDiff(args []string) error {
+	fs := flag.NewFlagSet("diff", flag.ExitOnError)
+	failOn := fs.String("fail-on", "high", "lowest severity of a NEW finding that counts as a regression")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return errors.New("diff: expected two stage files, e.g. scanner diff before.json after.json")
+	}
+
+	before, err := readFindings(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	after, err := readFindings(fs.Arg(1))
+	if err != nil {
+		return err
+	}
+
+	report := diff.Compare(before, after)
+	if err := report.Write(os.Stdout, *failOn); err != nil {
+		return err
+	}
+	if report.Regressed(*failOn) {
+		return errRegressed
+	}
 	return nil
 }
 

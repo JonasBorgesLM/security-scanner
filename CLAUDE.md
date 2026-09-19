@@ -16,18 +16,21 @@ A Go CLI security scanner built for study purposes, targeting **only the author'
 ```bash
 go build ./...                          # build everything
 go vet ./...                            # static checks
-golangci-lint run ./...                 # lint (config in .golangci.yml)
+GOTOOLCHAIN=go1.25.14 golangci-lint run ./...   # lint — see note below
 go test ./...                           # run all tests
 go test ./internal/checks/... -run TestX -v   # run a single test
 go build -o scanner ./cmd/scanner       # build the CLI binary
 ```
 
-CLI usage (subcommands are separate pipeline stages, chained via JSON files):
+**Lint needs the pinned toolchain.** `golangci-lint` and `staticcheck` are compiled against a specific Go version and fail with `export data version N is greater than maximum supported version M` when the local Go is newer — the errors land inside the standard library, look nothing like your code, and are easy to read as "lint is broken here". Prefixing `GOTOOLCHAIN=` with the version from go.mod's `toolchain` directive makes both run clean. Without it there is no local lint at all, and CI becomes the first thing to notice an `errcheck` or `staticcheck` finding.
+
+CLI usage (subcommands are separate pipeline stages, chained via JSON files; `diff` compares two of those files instead of producing one):
 
 ```bash
 scanner scan   --spec openapi.yaml --config config.yaml --out findings.json
 scanner attack --in findings.json  --config config.yaml --out confirmed.json
 scanner report --in confirmed.json --out report.html
+scanner diff   before.json after.json [--fail-on high]   # exit 2 = worse
 ```
 
 ## Architecture
@@ -44,6 +47,7 @@ Lightweight hexagonal (ports/adapters), so checks can be tested against a fake `
 - `internal/checks/` — one file per check, self-registering via `init()` into `registry.go` (same pattern as `database/sql` drivers). Each check declares `CheckMetadata{Kind: model.KindPassive|model.KindActive, AppliesTo: func(Endpoint) bool, ...}`. `RegisterCheck` panics on a duplicate/empty name or unknown `Kind` — startup-time programming errors, not runtime conditions. `Enabled(names)` resolves `checks.enabled` from config and **errors on an unknown name**, so a typo cannot silently disable a check and yield a clean-looking report.
 - `internal/adapters/config/` — reads and validates `config.yaml`. Accumulates every validation failure into one message instead of stopping at the first, and cross-checks that `target.base_url`'s host is in `scope.allowed_hosts`. The `auth` block is optional and all-or-nothing: absent is valid (a fully public target), but any field set requires the whole set (`Auth.anyFieldSet`/`Configured`). Whether the target *actually* needs auth depends on the spec, so `cmd/scanner` (`runScan`/`runAttack`) makes that cross-check — building the `Authenticator` only when an endpoint requires auth, and erroring clearly if one does but no `auth` block was configured.
 - `internal/envexpand/` — shared `${VAR}` expansion used by `config` and `auth`. Expands YAML scalar values only (never comments) and errors, naming every unset variable, rather than passing a literal `${VAR}` through as a credential.
+- `internal/diff/` — compares two stage files. **A disappeared finding is only `resolved` when the newer run actually reached a verdict on that route and check**; when it could not, the finding is reported as `no longer examined`, because a finding also vanishes when nobody looked. It reads `coverage.examined` to tell those apart, which is the capability schema v3 added. `Regressed` counts two things: a new finding at or above the threshold, **and coverage that used to exist and no longer does** — a run that examines less than the one before it has regressed even when its findings list is shorter. A regression exits 2 (via `errRegressed`, returned rather than `os.Exit`ed so it stays testable); the tool failing exits 1, and a CI step that cannot tell those apart treats a broken scanner as a clean report.
 - `internal/report/` — HTML templates + JSON writer for the final report.
 - `internal/checks/payloads/` and `internal/checks/patterns/` — attack payload wordlists (strings *sent to* the target, e.g. `payloads/sqli.txt` and the marker templates in `payloads/xss.txt`) and detection regexes (`patterns/secrets.txt`) respectively, both loaded via `go:embed` so they extend without touching check logic. Both live beside the check that embeds them rather than in a shared top-level directory — `go:embed` cannot ascend past the embedding source file's own directory, so there is nowhere else they could live and still be embeddable.
 - `internal/attack/` — the `attack` stage. One `Confirmer` per check that has a proof of concept, self-registered via `init()` under `RegisterCheck`'s `CheckName` (same `database/sql`-style pattern as `internal/checks`). `Run` dispatches each `Finding` by `CheckName`; a `Finding` from a check with no registered `Confirmer` (a passive observation like `missing-headers`, which has nothing to "reproduce") passes through unchanged and is reported `skipped`, never silently promoted to `Confirmed: true`. Re-enforces the destructive gate independently of whatever produced `findings.json`, since `attack` is a separate process invocation that cannot assume that decision still holds.
