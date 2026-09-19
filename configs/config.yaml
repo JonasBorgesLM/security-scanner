@@ -92,3 +92,6 @@ checks:
     # runs against those routes, and sends no body — see its doc comment for
     # why that costs a verdict on some POST routes and is worth it.
     - auth-required
+    # Reports authenticated responses a cache may keep. Passive: it reads the
+    # Cache-Control of the baseline that was already collected.
+    - cache-on-authenticated
