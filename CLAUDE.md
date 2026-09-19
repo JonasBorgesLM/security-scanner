@@ -16,11 +16,13 @@ A Go CLI security scanner built for study purposes, targeting **only the author'
 ```bash
 go build ./...                          # build everything
 go vet ./...                            # static checks
-golangci-lint run ./...                 # lint (config in .golangci.yml)
+GOTOOLCHAIN=go1.25.14 golangci-lint run ./...   # lint — see note below
 go test ./...                           # run all tests
 go test ./internal/checks/... -run TestX -v   # run a single test
 go build -o scanner ./cmd/scanner       # build the CLI binary
 ```
+
+**Lint needs the pinned toolchain.** `golangci-lint` and `staticcheck` are compiled against a specific Go version and fail with `export data version N is greater than maximum supported version M` when the local Go is newer — the errors land inside the standard library, look nothing like your code, and are easy to read as "lint is broken here". Prefixing `GOTOOLCHAIN=` with the version from go.mod's `toolchain` directive makes both run clean. Without it there is no local lint at all, and CI becomes the first thing to notice an `errcheck` or `staticcheck` finding.
 
 CLI usage (subcommands are separate pipeline stages, chained via JSON files; `diff` compares two of those files instead of producing one):
 

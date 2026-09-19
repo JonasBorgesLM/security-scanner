@@ -151,7 +151,7 @@ func TestReport_WritePutsTheBadNewsFirst(t *testing.T) {
 	iNew := strings.Index(out, "new")
 	iUnverified := strings.Index(out, "no longer examined")
 	iResolved := strings.Index(out, "resolved")
-	if !(iNew < iUnverified && iUnverified < iResolved) {
+	if iNew >= iUnverified || iUnverified >= iResolved {
 		t.Errorf("sections are ordered wrong:\n%s", out)
 	}
 	if !strings.Contains(out, "could not look at these") {

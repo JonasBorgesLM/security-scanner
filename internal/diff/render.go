@@ -16,6 +16,16 @@ import (
 // second, and what stayed the same last and only as a count. A regression
 // guard whose bad news is below the fold is a regression guard nobody reads.
 func (r Report) Write(w io.Writer, threshold string) error {
+	// Rendered into a buffer and emitted once, so a writer that fails
+	// partway cannot leave half a regression report behind — and so the
+	// error that matters is the one from the single write that can fail.
+	var b strings.Builder
+	r.render(&b, threshold)
+	_, err := io.WriteString(w, b.String())
+	return err
+}
+
+func (r Report) render(w *strings.Builder, threshold string) {
 	sections := []struct {
 		marker  string
 		title   string
@@ -55,10 +65,9 @@ func (r Report) Write(w io.Writer, threshold string) error {
 
 	if r.Regressed(threshold) {
 		fmt.Fprintf(w, "\nregressed: a new finding at %s or above, or coverage that used to exist\n", threshold)
-		return nil
+		return
 	}
 	fmt.Fprintln(w, "\nno regression")
-	return nil
 }
 
 func sortFindings(in []model.Finding) []model.Finding {
