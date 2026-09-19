@@ -41,6 +41,13 @@ auth:
     # username_field: email
   # Dot-notation path to the token inside the JSON login response.
   # For {"data": {"access_token": "..."}} this is data.access_token
+  # Optional second account, for checks that must ask a question as somebody
+  # else — today only idor, which tries one user's resource with another
+  # user's session. It logs in through the same endpoint with the same token
+  # handling; only the credentials differ.
+  # secondary_credentials:
+  #   username: other@example.com
+  #   password: ${LAB_PASSWORD_2}
   token_path: data.access_token
   token_header: Authorization
   token_prefix: "Bearer "
@@ -102,3 +109,5 @@ checks:
     # Cross-Site Tracing has not been reachable since browsers stopped
     # letting script issue TRACE — what is left is information disclosure.
     - dangerous-http-methods
+    # Needs auth.secondary_credentials; skips with that reason when absent.
+    - idor

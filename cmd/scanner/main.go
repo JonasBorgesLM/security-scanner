@@ -185,7 +185,15 @@ func runScan(args []string) error {
 	// timeout, no credentials. Passing it here rather than building a second
 	// one is what keeps invariant 1 true for both identities — there is only
 	// ever one path to the network, and it is guarded.
-	eng, err := engine.New(engineConfig(cfg), scanClient, client)
+	// A second account only when config.yaml supplies one. Nil is the
+	// signal a check reads to say "no second user was configured" instead
+	// of comparing a user with itself.
+	secondary, err := secondaryClient(ctx, cfg, client)
+	if err != nil {
+		return err
+	}
+
+	eng, err := engine.New(engineConfig(cfg), scanClient, client, secondary)
 	if err != nil {
 		return err
 	}
@@ -424,7 +432,11 @@ func runAttack(args []string) error {
 	// rate limiter the engine uses internally — and, as there, one budget
 	// shared by both identities. `client` is the guarded client with no
 	// Authenticator above it, so it is the anonymous one.
-	clients := engine.NewRateLimitedClients(attackClient, client, cfg.Engine.RequestsPerSecond, cfg.Engine.Burst)
+	secondary, err := secondaryClient(ctx, cfg, client)
+	if err != nil {
+		return err
+	}
+	clients := engine.NewRateLimitedClients(attackClient, client, secondary, cfg.Engine.RequestsPerSecond, cfg.Engine.Burst)
 
 	destructive := countDestructiveFindings(in.Findings)
 	fmt.Fprintf(os.Stderr, "target:     %s\n", cfg.Target.BaseURL)
@@ -658,6 +670,35 @@ func runDiff(args []string) error {
 		return errRegressed
 	}
 	return nil
+}
+
+// secondaryClient builds the second authenticated identity, or returns nil
+// when config.yaml supplies no second account.
+//
+// It logs in eagerly, for the same reason the first one does: bad
+// credentials should fail here with a clear message rather than as a wave
+// of skipped routes later. It reuses everything about the first account's
+// login except the credentials themselves, so the two cannot drift.
+func secondaryClient(ctx context.Context, cfg *config.Config, client ports.HTTPClient) (ports.HTTPClient, error) {
+	if !cfg.Auth.HasSecondary() {
+		return nil, nil
+	}
+
+	second := authConfig(cfg)
+	second.Credentials = auth.Credentials{
+		Username:      cfg.Auth.SecondaryCredentials.Username,
+		Password:      cfg.Auth.SecondaryCredentials.Password,
+		UsernameField: cfg.Auth.Credentials.UsernameField,
+	}
+
+	a, err := auth.New(cfg.Target.BaseURL, second, client)
+	if err != nil {
+		return nil, fmt.Errorf("secondary account: %w", err)
+	}
+	if err := a.Authenticate(ctx); err != nil {
+		return nil, fmt.Errorf("secondary account: %w", err)
+	}
+	return a, nil
 }
 
 // authConfig maps the YAML-facing config.Auth onto the domain-facing

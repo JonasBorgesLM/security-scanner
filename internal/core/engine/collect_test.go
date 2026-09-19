@@ -67,7 +67,7 @@ func newCollectEngine(t *testing.T, client ports.HTTPClient, testDestructive boo
 		MaxConcurrency:    4,
 		RequestsPerSecond: 100000,
 		TestDestructive:   testDestructive,
-	}, client, client)
+	}, client, client, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -572,7 +572,7 @@ func TestCollect_UnjoinableBaseURLBecomesBaselineErr(t *testing.T) {
 		BaseURL:           "http://lab.invalid/\x7f\x00",
 		MaxConcurrency:    2,
 		RequestsPerSecond: 100000,
-	}, &recordingClient{}, &recordingClient{})
+	}, &recordingClient{}, &recordingClient{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -610,7 +610,7 @@ func TestCollect_GathersTheOriginProbe(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	e, err := New(Config{BaseURL: srv.URL, MaxConcurrency: 1, RequestsPerSecond: 1000}, http.DefaultClient, http.DefaultClient)
+	e, err := New(Config{BaseURL: srv.URL, MaxConcurrency: 1, RequestsPerSecond: 1000}, http.DefaultClient, http.DefaultClient, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -654,7 +654,7 @@ func TestCollect_SkipsProbesForARouteThatIsNotThere(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	e, err := New(Config{BaseURL: srv.URL, MaxConcurrency: 1, RequestsPerSecond: 1000}, http.DefaultClient, http.DefaultClient)
+	e, err := New(Config{BaseURL: srv.URL, MaxConcurrency: 1, RequestsPerSecond: 1000}, http.DefaultClient, http.DefaultClient, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

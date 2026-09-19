@@ -116,7 +116,7 @@ func newEngine(t *testing.T, testDestructive bool) *Engine {
 		MaxConcurrency:    4,
 		RequestsPerSecond: 100000,
 		TestDestructive:   testDestructive,
-	}, &fakeClient{}, &fakeClient{})
+	}, &fakeClient{}, &fakeClient{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -177,7 +177,7 @@ func TestRun_CancellationStopsThePool(t *testing.T) {
 		},
 	}
 
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 1000}, &fakeClient{}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 1000}, &fakeClient{}, &fakeClient{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -237,7 +237,7 @@ func TestRun_InFlightJobFinishesBeforeShutdown(t *testing.T) {
 		},
 	}
 
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 1000}, &fakeClient{}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 1000}, &fakeClient{}, &fakeClient{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -283,7 +283,7 @@ func TestRun_TimeoutStopsThePool(t *testing.T) {
 	}
 
 	start := time.Now()
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 2, RequestsPerSecond: 1000}, &fakeClient{}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 2, RequestsPerSecond: 1000}, &fakeClient{}, &fakeClient{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -311,7 +311,7 @@ func TestRun_CancelledBeforeStartRunsNothing(t *testing.T) {
 		},
 	}
 
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 1000}, &fakeClient{}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 1000}, &fakeClient{}, &fakeClient{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -330,7 +330,7 @@ func TestRun_CancelledBeforeStartRunsNothing(t *testing.T) {
 }
 
 func TestRun_LeavesNoGoroutinesBehind(t *testing.T) {
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 8, RequestsPerSecond: 10000}, &fakeClient{}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 8, RequestsPerSecond: 10000}, &fakeClient{}, &fakeClient{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -383,7 +383,7 @@ func TestRun_NeverExceedsMaxConcurrency(t *testing.T) {
 		},
 	}
 
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: maxConcurrency, RequestsPerSecond: 100000}, &fakeClient{}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: maxConcurrency, RequestsPerSecond: 100000}, &fakeClient{}, &fakeClient{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -402,7 +402,7 @@ func TestRun_NeverExceedsMaxConcurrency(t *testing.T) {
 
 func TestRun_MoreWorkersThanJobsIsHarmless(t *testing.T) {
 	client := &fakeClient{}
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 32, RequestsPerSecond: 10000}, client, client)
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 32, RequestsPerSecond: 10000}, client, client, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -417,7 +417,7 @@ func TestRun_MoreWorkersThanJobsIsHarmless(t *testing.T) {
 }
 
 func TestRun_NoJobs(t *testing.T) {
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 10}, &fakeClient{}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 10}, &fakeClient{}, &fakeClient{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -494,7 +494,7 @@ func TestRun_CheckErrorIsReportedNotFatal(t *testing.T) {
 		},
 	}
 
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 10000}, &fakeClient{}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 10000}, &fakeClient{}, &fakeClient{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -537,7 +537,7 @@ func TestRun_PanickingCheckBecomesAnError(t *testing.T) {
 		},
 	}
 
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 2, RequestsPerSecond: 10000}, &fakeClient{}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 2, RequestsPerSecond: 10000}, &fakeClient{}, &fakeClient{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -574,7 +574,7 @@ func TestRun_FindingsAreReturned(t *testing.T) {
 		},
 	}
 
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 10000}, &fakeClient{}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 10000}, &fakeClient{}, &fakeClient{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -605,7 +605,7 @@ func TestRun_PassiveChecksSpendNoRateBudget(t *testing.T) {
 	}
 
 	// 1 req/s would make even two requests take a second.
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 1, Burst: 1}, client, client)
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 4, RequestsPerSecond: 1, Burst: 1}, client, client, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -650,7 +650,7 @@ func TestNew_RejectsInvalidConfig(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := New(tt.cfg, tt.client, tt.anonymous); err == nil {
+			if _, err := New(tt.cfg, tt.client, tt.anonymous, nil); err == nil {
 				t.Error("New() error = nil, want an error")
 			}
 		})
@@ -658,7 +658,7 @@ func TestNew_RejectsInvalidConfig(t *testing.T) {
 }
 
 func TestNew_DefaultsBurstToOne(t *testing.T) {
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 10}, &fakeClient{}, &fakeClient{})
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 1, RequestsPerSecond: 10}, &fakeClient{}, &fakeClient{}, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

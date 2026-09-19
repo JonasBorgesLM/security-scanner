@@ -83,6 +83,19 @@ type Auth struct {
 	// cookie jar to carry the matching cookie half. Values may contain
 	// ${VAR} references, expanded the same way Credentials.Password is.
 	ExtraHeaders map[string]string `yaml:"extra_headers"`
+	// SecondaryCredentials is a second account, for checks that have to ask
+	// a question as somebody else — today only idor, which needs to try one
+	// user's resource with another user's session.
+	//
+	// Optional, and deliberately just credentials: the second user logs in
+	// through the same endpoint with the same token handling, so repeating
+	// any of that would be an invitation to let the two drift apart.
+	SecondaryCredentials Credentials `yaml:"secondary_credentials"`
+}
+
+// HasSecondary reports whether a second account was supplied.
+func (a Auth) HasSecondary() bool {
+	return a.SecondaryCredentials.Username != "" || a.SecondaryCredentials.Password != ""
 }
 
 // Configured reports whether an auth block was supplied. Validation
@@ -339,6 +352,20 @@ func (c *Config) validateAuth(errs *validationErrors) {
 	}
 	if c.Auth.Credentials.Password == "" {
 		errs.add("auth.credentials.password is required when any auth field is set")
+	}
+	// Same all-or-nothing rule the block itself follows: half a second
+	// account is a typo, and reading it as "no second account" would make a
+	// check that needs one skip for a reason that names the wrong thing.
+	if c.Auth.HasSecondary() {
+		if c.Auth.SecondaryCredentials.Username == "" {
+			errs.add("auth.secondary_credentials.username is required when a secondary account is set")
+		}
+		if c.Auth.SecondaryCredentials.Password == "" {
+			errs.add("auth.secondary_credentials.password is required when a secondary account is set")
+		}
+		if c.Auth.SecondaryCredentials.Username == c.Auth.Credentials.Username {
+			errs.add("auth.secondary_credentials.username is the same account as auth.credentials.username; a check that compares two users would compare one with itself")
+		}
 	}
 }
 

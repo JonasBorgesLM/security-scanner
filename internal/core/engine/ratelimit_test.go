@@ -16,7 +16,7 @@ func TestRun_RespectsRateLimit(t *testing.T) {
 	)
 
 	client := &fakeClient{}
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 8, RequestsPerSecond: rps, Burst: burst}, client, client)
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: 8, RequestsPerSecond: rps, Burst: burst}, client, client, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -63,7 +63,7 @@ func TestRun_RateLimitAppliesAcrossWorkers(t *testing.T) {
 	)
 
 	client := &fakeClient{}
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: jobs, RequestsPerSecond: rps, Burst: 1}, client, client)
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: jobs, RequestsPerSecond: rps, Burst: 1}, client, client, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -88,7 +88,7 @@ func TestRun_BurstAllowsAnInitialBatch(t *testing.T) {
 	)
 
 	client := &fakeClient{}
-	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: jobs, RequestsPerSecond: rps, Burst: burst}, client, client)
+	e, err := New(Config{BaseURL: testBaseURL, MaxConcurrency: jobs, RequestsPerSecond: rps, Burst: burst}, client, client, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -110,7 +110,7 @@ func TestRun_BurstAllowsAnInitialBatch(t *testing.T) {
 
 func TestNewRateLimitedClient_PacesRequests(t *testing.T) {
 	client := &fakeClient{}
-	rl := NewRateLimitedClients(client, client, 20, 1).Default
+	rl := NewRateLimitedClients(client, client, nil, 20, 1).Default
 
 	start := time.Now()
 	for range 3 {
@@ -132,7 +132,7 @@ func TestNewRateLimitedClient_DefaultsBurstToOne(t *testing.T) {
 	// Burst 0 must not panic or produce an unlimited limiter; it should
 	// behave the same as New's own default of 1.
 	client := &fakeClient{}
-	rl := NewRateLimitedClients(client, client, 1000, 0).Default
+	rl := NewRateLimitedClients(client, client, nil, 1000, 0).Default
 
 	req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://lab.invalid/x", nil)
 	if _, err := rl.Do(req); err != nil {

@@ -120,7 +120,7 @@ type Engine struct {
 // is deliberate — logins are rare and already collapsed into a single
 // in-flight attempt by the Authenticator — but it does mean the ceiling is
 // requests_per_second plus the occasional login.
-func New(cfg Config, client, anonymous ports.HTTPClient) (*Engine, error) {
+func New(cfg Config, client, anonymous, secondary ports.HTTPClient) (*Engine, error) {
 	if cfg.BaseURL == "" {
 		return nil, errors.New("engine: BaseURL must not be empty")
 	}
@@ -151,6 +151,10 @@ func New(cfg Config, client, anonymous ports.HTTPClient) (*Engine, error) {
 		clients: model.Clients{
 			Default:   &rateLimitedClient{inner: client, limiter: limiter},
 			Anonymous: &rateLimitedClient{inner: anonymous, limiter: limiter},
+			// Nil stays nil: a check must be able to tell "no second
+			// account was configured" from "here is one", and wrapping nil
+			// in a limiter would hand it a client that panics on use.
+			Secondary: rateLimitIfPresent(secondary, limiter),
 		},
 	}, nil
 }
@@ -474,7 +478,7 @@ func (e *Engine) runJob(ctx context.Context, job Job) (res Result) {
 	clients := e.clients
 	if meta.Kind == model.KindPassive {
 		denied := deniedClient{checkName: meta.Name}
-		clients = model.Clients{Default: denied, Anonymous: denied}
+		clients = model.Clients{Default: denied, Anonymous: denied, Secondary: denied}
 	}
 
 	findings, err := job.Check.Run(ctx, job.Target, clients)
@@ -645,6 +649,14 @@ func newRateLimitedClient(inner ports.HTTPClient, requestsPerSecond float64, bur
 	}
 }
 
+// rateLimitIfPresent wraps an optional identity, leaving nil as nil.
+func rateLimitIfPresent(inner ports.HTTPClient, limiter *rate.Limiter) ports.HTTPClient {
+	if inner == nil {
+		return nil
+	}
+	return &rateLimitedClient{inner: inner, limiter: limiter}
+}
+
 // NewRateLimitedClients paces both identities with the same pacing New
 // applies internally, exported for pipeline stages that need "gentle by
 // design" without a full Engine — the attack command, which walks a
@@ -655,7 +667,7 @@ func newRateLimitedClient(inner ports.HTTPClient, requestsPerSecond float64, bur
 // rule cannot be got wrong by a caller assembling them separately: there is
 // one limiter here, as there is inside New, because the target does not
 // care which credentials a request carried.
-func NewRateLimitedClients(client, anonymous ports.HTTPClient, requestsPerSecond float64, burst int) model.Clients {
+func NewRateLimitedClients(client, anonymous, secondary ports.HTTPClient, requestsPerSecond float64, burst int) model.Clients {
 	if burst < 1 {
 		burst = 1
 	}
@@ -663,6 +675,7 @@ func NewRateLimitedClients(client, anonymous ports.HTTPClient, requestsPerSecond
 	return model.Clients{
 		Default:   &rateLimitedClient{inner: client, limiter: limiter},
 		Anonymous: &rateLimitedClient{inner: anonymous, limiter: limiter},
+		Secondary: rateLimitIfPresent(secondary, limiter),
 	}
 }
 
