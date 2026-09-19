@@ -124,3 +124,51 @@ func TestCacheOnAuthenticated_NoBaselineIsASkip(t *testing.T) {
 		t.Errorf("err = %v, want a skip", err)
 	}
 }
+
+// TestCacheOnAuthenticated_AnErrorPageIsNotTheRoutesResponse is the defect
+// the scanner's first real findings exposed.
+//
+// Collection fills a path parameter with a placeholder, so /{code} is
+// observed as the 404 for a code that does not exist. The check reported
+// that as "a response only this user should see" — it is neither that nor
+// anything a cache keeping it would expose, and the route's actual response
+// may well set Cache-Control.
+func TestCacheOnAuthenticated_AnErrorPageIsNotTheRoutesResponse(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusBadRequest, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			target := cacheTarget("")
+			target.Baseline.StatusCode = status
+
+			findings, err := runCache(t, target)
+			if len(findings) != 0 {
+				t.Errorf("got %d findings from a %d, want none", len(findings), status)
+			}
+			if !errors.Is(err, model.ErrSkipped) {
+				t.Fatalf("err = %v, want a skip — an error page is not the route's response", err)
+			}
+			if !strings.Contains(err.Error(), "error page") {
+				t.Errorf("reason = %q, want it to say what was wrong with the subject", err)
+			}
+		})
+	}
+}
+
+// TestCacheOnAuthenticated_A2xxIsStillJudged is the control that keeps the
+// narrowing from swallowing the check. The finding against /debug/vars —
+// 200 OK with no Cache-Control at all — is a true positive and must survive.
+func TestCacheOnAuthenticated_A2xxIsStillJudged(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusCreated, http.StatusNoContent} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			target := cacheTarget("")
+			target.Baseline.StatusCode = status
+
+			findings, err := runCache(t, target)
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if len(findings) != 1 {
+				t.Errorf("got %d findings from a %d with no Cache-Control, want 1", len(findings), status)
+			}
+		})
+	}
+}

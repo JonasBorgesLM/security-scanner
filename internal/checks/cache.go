@@ -61,6 +61,31 @@ func (c *cacheOnAuthenticated) Run(_ context.Context, t model.Target, _ model.Cl
 			t.Endpoint.Method, t.Endpoint.Path, t.BaselineErr)
 	}
 
+	// An error page is not this route's response. The check's whole claim is
+	// about "a response only this user should see", and a 404 or a 500 is
+	// neither that nor anything a cache keeping it would expose.
+	//
+	// This matters in practice, not in theory: collection fills a path
+	// parameter with a placeholder, so a route like /{code} is observed as
+	// the 404 for a code that does not exist. Judging that produced a real
+	// over-claimed finding against the task-api — the response it described
+	// as private was an error page, and the route's actual response may well
+	// set Cache-Control.
+	//
+	// The narrowing stops here rather than applying to every passive check,
+	// because the checks differ in whether an error page is a valid subject.
+	// missing-headers asks whether a header is set, and security headers
+	// normally come from middleware that covers the error page too.
+	// exposed-secrets asks whether a credential is in the body, and one
+	// leaking from a 500 is leaking. Only this check's question is
+	// specifically about a response that does not exist here.
+	if code := t.Baseline.StatusCode; code < 200 || code >= 300 {
+		return nil, model.Skippedf(
+			"the collected response for %s %s is a %d, which is an error page rather than the route's own response; "+
+				"what it allows a cache to do says nothing about what the route returns when it succeeds",
+			t.Endpoint.Method, t.Endpoint.Path, code)
+	}
+
 	raw := t.Baseline.Headers.Get("Cache-Control")
 	directives := parseCacheControl(raw)
 
