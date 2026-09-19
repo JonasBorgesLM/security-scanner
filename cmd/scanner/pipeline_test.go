@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1420,5 +1421,79 @@ func TestScan_AgainstADynamicTargetIdentityIsStableEvidenceIsNot(t *testing.T) {
 	}
 	if !evidenceMoved {
 		t.Error("evidence was identical across runs; the server is not dynamic and this test proves nothing")
+	}
+}
+
+// writeStageFile writes a FindingsFile the way a stage would.
+func writeStageFile(t *testing.T, dir, name string, f model.FindingsFile) string {
+	t.Helper()
+	f.SchemaVersion = model.SchemaVersion
+	path := filepath.Join(dir, name)
+	data, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
+}
+
+// TestDiff_ReportsARegressionWithoutEndingTheProcess drives the subcommand
+// the way CI would, and pins the contract that makes it usable as a gate: a
+// regression comes back as errRegressed, which main turns into exit code 2,
+// while the tool failing outright stays exit 1. A step that cannot tell
+// those apart treats a broken scanner as a clean report.
+func TestDiff_ReportsARegressionWithoutEndingTheProcess(t *testing.T) {
+	dir := t.TempDir()
+
+	before := writeStageFile(t, dir, "before.json", model.FindingsFile{
+		Coverage: model.Coverage{Examined: []model.ExaminedCheck{{Check: "auth-required", Method: "GET", Path: "/x"}}},
+	})
+	after := writeStageFile(t, dir, "after.json", model.FindingsFile{
+		Coverage: model.Coverage{Examined: []model.ExaminedCheck{{Check: "auth-required", Method: "GET", Path: "/x"}}},
+		Findings: []model.Finding{{
+			ID: "auth-required:GET:/x:unauthenticated", CheckName: "auth-required", Severity: "critical",
+			Endpoint: model.Endpoint{Method: "GET", Path: "/x", RequiresAuth: true},
+		}},
+	})
+
+	err := runDiff([]string{before, after})
+	if !errors.Is(err, errRegressed) {
+		t.Fatalf("runDiff() error = %v, want errRegressed for a new critical finding", err)
+	}
+}
+
+// TestDiff_CleanComparisonSucceeds is the control: the gate must pass when
+// nothing got worse, or it is not a gate.
+func TestDiff_CleanComparisonSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	same := model.FindingsFile{
+		Coverage: model.Coverage{Examined: []model.ExaminedCheck{{Check: "missing-headers", Method: "GET", Path: "/x"}}},
+		Findings: []model.Finding{{ID: "a", CheckName: "missing-headers", Severity: "low",
+			Endpoint: model.Endpoint{Method: "GET", Path: "/x"}}},
+	}
+
+	if err := runDiff([]string{
+		writeStageFile(t, dir, "a.json", same),
+		writeStageFile(t, dir, "b.json", same),
+	}); err != nil {
+		t.Errorf("runDiff() error = %v, want nil for two identical runs", err)
+	}
+}
+
+// TestDiff_RequiresTwoFiles keeps the usage error distinct from a
+// regression: both are non-zero exits, and only one means the target got
+// worse.
+func TestDiff_RequiresTwoFiles(t *testing.T) {
+	dir := t.TempDir()
+	one := writeStageFile(t, dir, "a.json", model.FindingsFile{})
+
+	err := runDiff([]string{one})
+	if err == nil {
+		t.Fatal("runDiff() with one file = nil error, want a usage error")
+	}
+	if errors.Is(err, errRegressed) {
+		t.Error("a usage error came back as a regression; CI would report the target got worse")
 	}
 }
