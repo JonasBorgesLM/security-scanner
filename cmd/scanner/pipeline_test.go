@@ -191,11 +191,14 @@ func TestScan_EndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("one baseline request per non-destructive endpoint", func(t *testing.T) {
+	t.Run("collection costs a constant per endpoint, and the checks cost nothing", func(t *testing.T) {
 		// /public, GET /items, POST /items, /secure = 4 endpoints,
-		// DELETE /items/{id} skipped.
-		if got := lab.requests.Load(); got != 4 {
-			t.Errorf("lab received %d requests, want 4 — one baseline each, none per check", got)
+		// DELETE /items/{id} skipped. Each costs the baseline plus one
+		// request per probe in model.Probes.
+		const perEndpoint = 2
+		if got, want := lab.requests.Load(), int32(4*perEndpoint); got != want {
+			t.Errorf("lab received %d requests, want %d — %d per endpoint from collection, and none per check",
+				got, want, perEndpoint)
 		}
 	})
 

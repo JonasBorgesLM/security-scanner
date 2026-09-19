@@ -5,9 +5,11 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
@@ -90,8 +92,12 @@ func TestCollect_CapturesOneBaselinePerEndpoint(t *testing.T) {
 	if len(targets) != 2 {
 		t.Fatalf("got %d targets, want 2", len(targets))
 	}
-	if got := len(client.seen()); got != 2 {
-		t.Errorf("client saw %d requests, want exactly one baseline per endpoint", got)
+	// Two endpoints, and requestsPerEndpoint requests for each: the baseline
+	// plus the origin probe. The number that matters is that it is a
+	// CONSTANT — collection stays proportional to the size of the spec, not
+	// to the spec times the number of enabled checks.
+	if got, want := len(client.seen()), 2*requestsPerEndpoint; got != want {
+		t.Errorf("client saw %d requests, want %d (baseline + probes, per endpoint)", got, want)
 	}
 	for _, target := range targets {
 		if target.BaselineErr != nil {
@@ -112,6 +118,27 @@ func TestCollect_CapturesOneBaselinePerEndpoint(t *testing.T) {
 	}
 }
 
+// distinct returns the unique values in in, so an assertion about WHICH
+// URLs collection built is not also an assertion about how many probes it
+// sends each of them.
+//
+// It deduplicates by set membership rather than by collapsing adjacent
+// repeats: the pool collects concurrently, so a route's baseline and its
+// probe are not guaranteed to land next to each other in the record. An
+// earlier version assumed they would and passed locally on the ordering it
+// happened to get, then failed in CI on a different one.
+func distinct(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	var out []string
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func TestCollect_SubstitutesPathParameters(t *testing.T) {
 	client := &recordingClient{}
 	e := newCollectEngine(t, client, false)
@@ -125,7 +152,9 @@ func TestCollect_SubstitutesPathParameters(t *testing.T) {
 		"GET http://lab.invalid/items/1",
 		"GET http://lab.invalid/users/1/posts/1",
 	}
-	got := client.seen()
+	// This test is about WHICH URLs collection built, not how many probes
+	// it sends each of them, so repeats collapse.
+	got := distinct(client.seen())
 	slices.Sort(got)
 	slices.Sort(want)
 	if strings.Join(got, "|") != strings.Join(want, "|") {
@@ -345,8 +374,9 @@ func TestRun_ManyPassiveChecksShareOneCollectedResponse(t *testing.T) {
 	eps := endpoints(3)
 	targets, _ := e.Collect(t.Context(), eps)
 
-	if got := len(client.seen()); got != len(eps) {
-		t.Fatalf("collection made %d requests, want %d (one per endpoint)", got, len(eps))
+	if got, want := len(client.seen()), len(eps)*requestsPerEndpoint; got != want {
+		t.Fatalf("collection made %d requests, want %d — four checks over three endpoints must still cost what collection costs, not four times it",
+			got, want)
 	}
 
 	results, err := e.Run(t.Context(), e.BuildJobs(targets, checks))
@@ -362,9 +392,11 @@ func TestRun_ManyPassiveChecksShareOneCollectedResponse(t *testing.T) {
 			t.Errorf("%s on %s: Err = %v", r.CheckName, r.Endpoint.Path, r.Err)
 		}
 	}
-	// Still only the collection requests: 12 checks, 3 requests.
-	if got := len(client.seen()); got != len(eps) {
-		t.Errorf("client saw %d requests after running %d checks, want %d", got, len(results), len(eps))
+	// Still only what collection spent. Twelve checks ran and added nothing:
+	// that is the property, and it is the reason passive checks are free.
+	if got, want := len(client.seen()), len(eps)*requestsPerEndpoint; got != want {
+		t.Errorf("client saw %d requests after running %d checks, want %d — the checks must have added none",
+			got, len(results), want)
 	}
 
 	mu.Lock()
@@ -552,5 +584,90 @@ func TestCollect_UnjoinableBaseURLBecomesBaselineErr(t *testing.T) {
 	}
 	if targets[0].BaselineErr == nil {
 		t.Error("BaselineErr = nil, want an error for a base URL that cannot be joined")
+	}
+}
+
+// requestsPerEndpoint is what collection spends on one endpoint: the
+// baseline, plus one request per probe in model.Probes. Naming it keeps the
+// footprint assertions from silently passing when a probe is added.
+const requestsPerEndpoint = 2
+
+// TestCollect_GathersTheOriginProbe pins what the probe is for. A
+// spec-compliant CORS implementation answers nothing when the request
+// carries no Origin, so the baseline cannot see a policy even when one
+// exists — collecting the variation here is what makes cors-misconfigured
+// passive instead of a check that spends its own request per route.
+func TestCollect_GathersTheOriginProbe(t *testing.T) {
+	var mu sync.Mutex
+	var origins []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		origins = append(origins, r.Header.Get("Origin"))
+		mu.Unlock()
+		w.Header().Set("X-Seen-Origin", r.Header.Get("Origin"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	e, err := New(Config{BaseURL: srv.URL, MaxConcurrency: 1, RequestsPerSecond: 1000}, http.DefaultClient, http.DefaultClient)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	targets, err := e.Collect(t.Context(), []model.Endpoint{{Method: http.MethodGet, Path: "/items"}})
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("got %d targets, want 1", len(targets))
+	}
+
+	probe := targets[0].Probes.Origin
+	if probe == nil {
+		t.Fatal("Probes.Origin is nil; the probe was not collected")
+	}
+	if got := probe.Headers.Get("X-Seen-Origin"); got != model.ProbeOrigin {
+		t.Errorf("the target saw Origin %q, want %q", got, model.ProbeOrigin)
+	}
+
+	// And the baseline must NOT have carried one: the whole point is that
+	// the two requests differ in exactly that header.
+	mu.Lock()
+	defer mu.Unlock()
+	if len(origins) != 2 {
+		t.Fatalf("target saw %d requests, want 2 (baseline + probe)", len(origins))
+	}
+	if origins[0] != "" {
+		t.Errorf("the baseline carried Origin %q, want none — it is the unmodified request", origins[0])
+	}
+}
+
+// TestCollect_SkipsProbesForARouteThatIsNotThere keeps the probe from
+// doubling what an absent route costs. Nothing can be learned by varying a
+// request against a route the target does not serve.
+func TestCollect_SkipsProbesForARouteThatIsNotThere(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	e, err := New(Config{BaseURL: srv.URL, MaxConcurrency: 1, RequestsPerSecond: 1000}, http.DefaultClient, http.DefaultClient)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	targets, err := e.Collect(t.Context(), []model.Endpoint{{Method: http.MethodGet, Path: "/gone"}})
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+
+	if got := hits.Load(); got != 1 {
+		t.Errorf("target received %d requests, want 1 — the baseline that found it missing, and no probes after", got)
+	}
+	if targets[0].Probes.Origin != nil {
+		t.Error("an origin probe was collected for a route that is not there")
 	}
 }

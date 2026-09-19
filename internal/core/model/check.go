@@ -66,6 +66,43 @@ type Response struct {
 	ProbedMethod string
 }
 
+// Probes are extra responses the collection phase gathered for one
+// endpoint, alongside the baseline.
+//
+// They exist because Baseline is one response to one request, and some
+// questions can only be answered by varying the request: a CORS policy is
+// invisible until something asks with an Origin, because a correct
+// implementation answers nothing without one. Collecting the variation once,
+// during the pass that already runs, keeps such checks passive — the
+// alternative is every one of them spending its own request.
+//
+// Every probe uses a safe method, so collection still creates and destroys
+// nothing. A probe is nil when it was not attempted or did not come back,
+// and a check that needs one must then skip rather than read the absence as
+// an answer.
+//
+// Like Baseline, they are READ-ONLY and shared by pointer across the checks
+// running concurrently on one endpoint.
+type Probes struct {
+	// Origin is the baseline request repeated with an Origin header, which
+	// is what makes a CORS policy observable at all.
+	Origin *Response
+}
+
+// ProbeOrigin is the Origin header value the origin probe sends.
+//
+// It is a fixed, obviously foreign origin rather than anything derived from
+// the target: the question is what the target does for a site it has no
+// reason to trust, and an origin resembling the target's own could be
+// allowed for a legitimate reason. Being fixed also keeps whatever a check
+// derives from it out of the non-deterministic pile.
+//
+// It lives here rather than in the engine because it is part of the
+// contract between collection and the checks that read the probe — and a
+// check reaching into the engine for it would invert the dependency, since
+// the engine is what runs checks.
+const ProbeOrigin = "https://scanner-probe.invalid"
+
 // Target is what a check is pointed at: the endpoint plus the baseline
 // response the engine collected for it up front.
 //
@@ -81,6 +118,9 @@ type Target struct {
 	// as evidence of anything.
 	Baseline    *Response
 	BaselineErr error
+	// Probes are the extra safe responses collection gathered for this
+	// endpoint. See Probes for why they exist and what nil means.
+	Probes Probes
 	// CanCreate is the run's engine.test_creates setting, stamped here so a
 	// check can see it. It rides on the Target rather than reaching the
 	// check some other way because a check must be able to SAY it was held
