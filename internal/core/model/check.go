@@ -171,6 +171,12 @@ type Clients struct {
 	// one. Nil otherwise, and a check that needs it must skip naming the
 	// setting rather than compare a user with itself.
 	Secondary ports.HTTPClient
+	// SessionToken is the raw credential Default is authenticating with,
+	// empty when the target needs no auth. It is here for the one check
+	// that must inspect the token rather than just send it — jwt-weak. A
+	// check reading it holds a live credential: keep it out of Evidence,
+	// the same rule exposed-secrets follows.
+	SessionToken string
 	// Anonymous carries no credentials, ever. On a target with no auth
 	// configured it is the same client as Default — which is harmless,
 	// because a check that cares about identity only applies to endpoints

@@ -179,6 +179,16 @@ func (a *Authenticator) Do(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
+// Token returns the credential the Authenticator is currently holding, or
+// "" before the first successful login. It is exported for the one check
+// that inspects the token itself rather than merely carrying it — jwt-weak,
+// which decodes it and forges a variant. Everything else should let Do
+// inject it and never see the value.
+func (a *Authenticator) Token() string {
+	token, _ := a.currentToken()
+	return token
+}
+
 func (a *Authenticator) currentToken() (token string, gen uint64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
