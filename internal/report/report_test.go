@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/JonasBorgesLM/security-scanner/internal/checks"
 	"strings"
 	"testing"
 
@@ -399,5 +400,36 @@ func TestWriteHTML_NamesTheRoutesThatCameBackClean(t *testing.T) {
 	// The gaps must not have been displaced by the new section.
 	if !strings.Contains(html, "Not examined") || !strings.Contains(html, "/items") {
 		t.Error("the not-examined table was lost when the examined one arrived")
+	}
+}
+
+// TestRecommendations_CoverEveryRegisteredCheck closes a gap that has no
+// symptom of its own. recommendationFor falls back to generic text when a
+// check has no entry, so a new check ships with "no automated guidance is
+// registered for this check yet" and nothing ever says so — the reader
+// assumes the scanner had nothing useful to add rather than that someone
+// forgot.
+//
+// It is the same shape as the shipped-config guard, which caught a real
+// omission one PR after it was written.
+func TestRecommendations_CoverEveryRegisteredCheck(t *testing.T) {
+	for _, name := range checks.Names() {
+		if _, ok := recommendations[name]; !ok {
+			t.Errorf("check %q has no remediation text; it would render the generic fallback with no other symptom", name)
+		}
+	}
+}
+
+// TestRecommendations_HaveNoStrandedEntries is the other direction: copy
+// for a check that no longer exists is dead weight nobody will notice.
+func TestRecommendations_HaveNoStrandedEntries(t *testing.T) {
+	registered := make(map[string]bool)
+	for _, name := range checks.Names() {
+		registered[name] = true
+	}
+	for name := range recommendations {
+		if !registered[name] {
+			t.Errorf("remediation text for %q, which is not a registered check", name)
+		}
 	}
 }
