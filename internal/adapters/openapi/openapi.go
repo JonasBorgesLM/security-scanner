@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strconv"
 
 	"github.com/getkin/kin-openapi/openapi3"
 
@@ -118,6 +119,7 @@ func extractParameters(pathLevel, opLevel openapi3.Parameters) []model.Parameter
 				In:       p.In,
 				Type:     schemaType(p.Schema),
 				Required: p.Required,
+				Sample:   parameterSample(p),
 			})
 		}
 	}
@@ -156,6 +158,7 @@ func extractBodyParameters(body *openapi3.RequestBodyRef) []model.Parameter {
 			In:       "body",
 			Type:     schemaType(schema.Properties[name]),
 			Required: required[name],
+			Sample:   schemaSample(schema.Properties[name]),
 		})
 	}
 	return out
@@ -170,6 +173,77 @@ func schemaType(ref *openapi3.SchemaRef) string {
 		return ""
 	}
 	return types[0]
+}
+
+// syntheticUUID stands in for any format: uuid value the spec itself does
+// not supply an example of. Fixed rather than randomly generated, so that
+// two loads of the same spec produce the same Parameter.Sample — findings
+// derived from it must stay deterministic across runs (invariant #8).
+// Its digits spell nothing; it is chosen only to be visibly synthetic to
+// anyone reading a captured request.
+const syntheticUUID = "00000000-0000-4000-8000-000000000000"
+
+// parameterSample computes Parameter.Sample for a query/path/header
+// parameter. OpenAPI allows an example at the parameter level, separate
+// from (and taking precedence over) any example on its schema — task-api's
+// own spec uses exactly that shape for its path parameters — so this is
+// checked before falling through to the schema.
+func parameterSample(p *openapi3.Parameter) string {
+	if v, ok := scalarString(p.Example); ok {
+		return v
+	}
+	return schemaSample(p.Schema)
+}
+
+// schemaSample computes a real, valid value for a schema, in priority
+// order: the schema's own example, an enum member (recursing into Items
+// for an array-of-enum, the shape OpenAPI uses for a multi-value query
+// parameter like task-api's own status/priority filters), then a
+// format-based synthetic value. Returns "" when the schema gives nothing
+// usable — callers fall back to their own generic filler in that case,
+// never invent a value schemaSample cannot justify from the spec.
+func schemaSample(ref *openapi3.SchemaRef) string {
+	if ref == nil || ref.Value == nil {
+		return ""
+	}
+	s := ref.Value
+
+	if v, ok := scalarString(s.Example); ok {
+		return v
+	}
+	if s.Type != nil && s.Type.Includes("array") && s.Items != nil {
+		return schemaSample(s.Items)
+	}
+	if len(s.Enum) > 0 {
+		if v, ok := scalarString(s.Enum[0]); ok {
+			return v
+		}
+	}
+	if s.Format == "uuid" {
+		return syntheticUUID
+	}
+	return ""
+}
+
+// scalarString renders an example/enum value (decoded from JSON, so its
+// static type is one of the encoding/json scalar shapes) as the string an
+// HTTP parameter needs. A map or slice — a structured example on a schema
+// that is not itself the value being asked for — is not a single scalar
+// this can inject, so it is refused rather than guessed at.
+func scalarString(v any) (string, bool) {
+	switch t := v.(type) {
+	case string:
+		if t == "" {
+			return "", false
+		}
+		return t, true
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64), true
+	case bool:
+		return strconv.FormatBool(t), true
+	default:
+		return "", false
+	}
 }
 
 // resolveSecurity determines whether an operation requires auth and, if so,

@@ -395,3 +395,69 @@ func TestActiveChecks_BodyOnlyRouteIsHeldBackNotCleared(t *testing.T) {
 		})
 	}
 }
+
+// ------------------------------------------------------- schema-aware fillers
+
+// TestProbeFillerFor_PrefersSampleOverTheGenericFallback pins the priority
+// order: a spec-derived value wins when present, and the check's own
+// generic default survives unchanged when the spec offers nothing — which
+// is every parameter that existed before Sample did.
+func TestProbeFillerFor_PrefersSampleOverTheGenericFallback(t *testing.T) {
+	withSample := model.Parameter{Name: "status", In: "query", Type: "string", Sample: "pending"}
+	if got := probeFillerFor(withSample, "1"); got != "pending" {
+		t.Errorf("probeFillerFor() = %q, want the Sample %q", got, "pending")
+	}
+
+	withoutSample := model.Parameter{Name: "q", In: "query", Type: "string"}
+	if got := probeFillerFor(withoutSample, "1"); got != "1" {
+		t.Errorf("probeFillerFor() = %q, want the fallback %q unchanged", got, "1")
+	}
+}
+
+// newEnumOnlyServer answers 200 only when q equals one of accept, 400
+// otherwise — the shape a strictly-typed enum or format-checked parameter
+// takes. It is what made sqli-boolean and xss-reflected produce zero
+// verdicts against a real, well-validated API: their generic filler "1"
+// is rejected exactly like an injection payload, so ErrNotExercised fires
+// before either check gets a chance to compare anything.
+func newEnumOnlyServer(t *testing.T, accept string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("q") != accept {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"error":"invalid value for q"}`)
+			return
+		}
+		fmt.Fprint(w, `{"rows":[{"id":1}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestActiveChecks_SampleReachesPastValidationTheGenericFillerCannot is the
+// regression guard for the live bug: with Sample set to the one value the
+// server accepts, both checks reach a verdict instead of ErrNotExercised.
+// TestActiveChecks_BenignValueRejectedIsInconclusive (already in this file)
+// is the same server with no Sample — the negative control this test's
+// fix must not have broken.
+func TestActiveChecks_SampleReachesPastValidationTheGenericFillerCannot(t *testing.T) {
+	srv := newEnumOnlyServer(t, "pending")
+	target := endpointFor(srv, "/items", model.Parameter{Name: "q", In: "query", Type: "string", Sample: "pending"})
+
+	tests := []struct {
+		name  string
+		check model.Check
+	}{
+		{"sqli-boolean", sqliCheck()},
+		{"xss-reflected", &xssReflected{templates: xssMarkerTemplates}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tt.check.Run(t.Context(), target, model.Clients{Default: http.DefaultClient})
+			if err != nil {
+				t.Fatalf("Run() error = %v, want a verdict — Sample should have let the noise/baseline probe past validation", err)
+			}
+		})
+	}
+}

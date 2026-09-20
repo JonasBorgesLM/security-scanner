@@ -1,0 +1,97 @@
+openapi: 3.0.3
+info:
+  title: Sample Values
+  version: "1.0"
+paths:
+  /widgets/{id}:
+    get:
+      operationId: getWidget
+      parameters:
+        # Parameter-level example wins over anything on the schema itself —
+        # the shape task-api's own path parameters use.
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: f47ac10b-58cc-4372-a567-0e02b2c3d479
+      responses:
+        "200":
+          description: OK
+  /gadgets/{key}:
+    get:
+      operationId: getGadget
+      parameters:
+        # No parameter-level example; falls through to the schema's own
+        # example.
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+            example: on-the-schema
+      responses:
+        "200":
+          description: OK
+  /search:
+    get:
+      operationId: search
+      parameters:
+        # Plain enum, no example anywhere: falls through to the first
+        # declared enum member.
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [relevance, newest, oldest]
+        # Array of enum — the shape task-api uses for its status/priority
+        # filters — resolved via the Items sub-schema.
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/Status"
+        # format: uuid with nothing else: falls through to the synthetic
+        # placeholder.
+        - name: token
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        # Nothing the spec can offer at all: Sample must stay empty so the
+        # caller's own generic filler applies, unchanged from before this
+        # existed.
+        - name: q
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK
+  /reports:
+    post:
+      operationId: createReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [format]
+              properties:
+                format:
+                  type: string
+                  enum: [pdf, csv]
+      responses:
+        "200":
+          description: OK
+components:
+  schemas:
+    Status:
+      type: string
+      enum: [pending, done]

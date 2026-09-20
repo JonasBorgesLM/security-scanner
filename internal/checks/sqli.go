@@ -342,8 +342,9 @@ func (c *sqliBoolean) measureNoise(
 ) (noise int, lastSample []byte, lastStatus int, err error) {
 	minLen, maxLen := -1, -1
 
+	filler := probeFillerFor(target, sqliProbeFiller)
 	for range sqliNoiseSamples {
-		res, err := sendProbe(ctx, client, "sqli", ep, origin, all, target, sqliProbeFiller)
+		res, err := sendProbe(ctx, client, "sqli", ep, origin, all, target, filler)
 		if err != nil {
 			return 0, nil, 0, err
 		}
@@ -385,7 +386,7 @@ func buildProbeRequest(
 	body := map[string]any{}
 
 	for _, p := range all {
-		v := sqliProbeFiller
+		v := probeFillerFor(p, sqliProbeFiller)
 		if p.Name == target.Name && p.In == target.In {
 			v = value
 		}

@@ -57,6 +57,26 @@ func sendProbe(
 	return &probeResult{url: req.URL.String(), status: resp.StatusCode, body: body}, nil
 }
 
+// probeFillerFor returns the benign value to send for a parameter whose
+// own value matters this round — the target of a noise measurement or a
+// baseline fetch, not a bystander parameter merely being held inert.
+//
+// It prefers p.Sample — a real value the OpenAPI spec itself supplied —
+// over fallback, the check's own generic default. Measured against a real
+// API: a strictly-typed parameter (an enum array, a uuid path segment)
+// rejects a purely generic filler exactly as it rejects an injection
+// payload, so the check never gets past validation to test anything and
+// ErrNotExercised fires on a parameter that was never actually exercised
+// by anything but a bad guess. A schema-derived value clears that gate
+// when the spec provides one; when it does not, the generic fallback is
+// still what runs, unchanged from before.
+func probeFillerFor(p model.Parameter, fallback string) string {
+	if p.Sample != "" {
+		return p.Sample
+	}
+	return fallback
+}
+
 // perParameterResult is the outcome of sweeping one check across an
 // endpoint's injectable parameters.
 type perParameterResult struct {
