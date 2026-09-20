@@ -1,34 +1,35 @@
-# Rodando o scanner como gate de CI
+# Running the scanner as a CI gate
 
-O scanner produz dois artefatos que um pipeline consome: um **SARIF**, que o
-GitHub Code Scanning lê nativamente, e um **exit code** do `scanner diff`,
-que decide se o build passa.
+The scanner produces two artifacts a pipeline consumes: a **SARIF** file that
+GitHub Code Scanning reads natively, and an **exit code** from `scanner
+diff` that decides whether the build passes.
 
 ---
 
-## A política de exit code
+## The exit code policy
 
-| Comando | 0 | 1 | 2 |
+| Command | 0 | 1 | 2 |
 |---|---|---|---|
-| `scan` / `attack` / `report` | sucesso | falhou | — |
-| `diff` | nada piorou | a comparação quebrou | **a execução nova está pior** |
+| `scan` / `attack` / `report` | success | failed | — |
+| `diff` | nothing got worse | the comparison itself broke | **the new run is worse** |
 
-O 2 é separado do 1 de propósito. Um passo de CI que não distingue os dois
-**trata um scanner quebrado como um relatório limpo** — que é a mesma
-confusão que a Etapa 1 gastou-se eliminando, reencenada no nível do pipeline.
+The 2 is kept separate from the 1 on purpose. A CI step that cannot tell
+the two apart **treats a broken scanner as a clean report** — the same
+confusion Stage 1 of this project's evolution spent itself eliminating,
+re-staged at the pipeline level.
 
-O que conta como "pior" são duas coisas, e a segunda é a que um diff comum
-não enxerga:
+What counts as "worse" is two things, and the second is what an ordinary
+diff cannot see:
 
-1. Um finding novo com severidade igual ou acima de `--fail-on` (padrão: `high`).
-2. **Cobertura que existia e não existe mais.** Uma execução que examina
-   menos que a anterior regrediu mesmo com a lista de findings mais curta —
-   especialmente então, porque é assim que quebrar o scanner se parece visto
-   de fora.
+1. A new finding at or above `--fail-on`'s severity (default: `high`).
+2. **Coverage that used to exist and no longer does.** A run that examines
+   less than the one before it has regressed even with a shorter findings
+   list — especially then, because that is what breaking the scanner looks
+   like from the outside.
 
 ---
 
-## Workflow de exemplo
+## Example workflow
 
 ```yaml
 name: Security scan
@@ -39,7 +40,7 @@ on:
 
 permissions:
   contents: read
-  security-events: write   # necessário para publicar o SARIF
+  security-events: write   # required to publish the SARIF
 
 jobs:
   scan:
@@ -53,7 +54,7 @@ jobs:
       - name: Build the scanner
         run: go build -o scanner ./cmd/scanner
 
-      # O alvo precisa estar no ar e dentro de scope.allowed_hosts.
+      # The target must be up and inside scope.allowed_hosts.
       - name: Start the target
         run: docker compose up -d --wait
 
@@ -69,9 +70,9 @@ jobs:
         uses: github/codeql-action/upload-sarif@v3
         with: {sarif_file: report.sarif}
 
-      # A baseline vem de uma execução anterior — um artefato, um commit, o
-      # que for. Sem ela o gate não tem contra o que comparar, e o passo é
-      # pulado em vez de passar por engano.
+      # The baseline comes from a previous run — an artifact, a commit,
+      # whatever fits. Without it the gate has nothing to compare against,
+      # and the step is skipped rather than passing by mistake.
       - name: Compare against the baseline
         if: hashFiles('baseline/confirmed.json') != ''
         run: ./scanner diff baseline/confirmed.json confirmed.json
@@ -79,25 +80,27 @@ jobs:
 
 ---
 
-## O que o SARIF carrega, e o que ele não pode carregar
+## What SARIF carries, and what it cannot carry
 
-**Localização.** Estes achados estão em rotas de um alvo em execução, não em
-linhas de arquivo. O `artifactLocation.uri` recebe a **URL do request que
-produziu o finding**, que é verdade. Apontar para um arquivo-fonte que o
-scanner nunca leu, só para a anotação cair numa linha, não seria — e por isso
-as anotações aparecem na aba Security sem se ancorar em código.
+**Location.** These findings live on routes of a running target, not lines
+of a file. `artifactLocation.uri` is given the **URL of the request that
+produced the finding**, which is true. Pointing at a source file the
+scanner never read, just to make the annotation land on a line, would not
+be — which is why the annotations show up in the Security tab without
+anchoring to code.
 
-**Severidade.** Duas escalas: `level` (`error`/`warning`/`note`) e
-`security-severity` (0–10), que é o número pelo qual o GitHub ordena e
-filtra. Omitir a segunda joga todo finding no mesmo balde.
+**Severity.** Two scales: `level` (`error`/`warning`/`note`) and
+`security-severity` (0–10), the number GitHub sorts and filters by.
+Omitting the second throws every finding into the same bucket.
 
-**Cobertura.** O Code Scanning não tem conceito de "não consegui examinar",
-então um writer de SARIF ingênuo **descarta o bloco `coverage`** — e este
-passaria a ser o único formato onde uma lista vazia não se distingue de um
-alvo limpo. As lacunas vão para
-`invocations[].toolExecutionNotifications`, que é o lugar do próprio SARIF
-para a ferramenta ter algo a dizer sobre a execução em vez de sobre o código.
+**Coverage.** Code Scanning has no concept of "could not examine", so a
+naive SARIF writer **drops the `coverage` block** — and this would become
+the one format where an empty list is indistinguishable from a clean
+target. The gaps go into `invocations[].toolExecutionNotifications`,
+SARIF's own place for the tool to say something about the run rather than
+about the code.
 
-Elas não viram anotações no código — o GitHub não as exibe ao lado dos
-resultados. Ficam no arquivo, para quem for lê-lo. É menos do que se queria,
-e é o máximo que o formato permite sem inventar localização.
+They do not become code annotations — GitHub does not display them
+alongside results. They stay in the file, for whoever reads it. It is less
+than one might want, and it is the most the format allows without
+inventing a location.

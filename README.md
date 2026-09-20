@@ -1,41 +1,81 @@
 # security-scanner
 
-Ferramenta de estudo em Go para descobrir vulnerabilidades numa API, confirmá-las
-via ataques controlados e gerar um relatório final.
+A Go CLI security scanner: discovers vulnerabilities in a live API, confirms
+them with controlled proof-of-concept attacks, and produces a report — built
+as a study project against the author's own lab API.
+
+[![CI](https://github.com/JonasBorgesLM/security-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/JonasBorgesLM/security-scanner/actions/workflows/ci.yml)
 
 ---
 
-## ⚠️ Escopo de uso
+## ⚠️ Scope of use
 
-**Use esta ferramenta exclusivamente contra infraestrutura que você mesmo opera ou
-está formalmente autorizado a testar.**
+**Use this tool exclusively against infrastructure you own or are formally
+authorized to test.**
 
-Escanear sistemas de terceiros sem autorização por escrito é ilegal na maior parte
-das jurisdições. Este projeto foi construído para uma API de laboratório do próprio
-autor, num ambiente controlado, e nada aqui muda essa responsabilidade: quem executa
-a ferramenta responde pelo alvo que escolheu.
+Scanning third-party systems without written authorization is illegal in most
+jurisdictions. This project was built for the author's own lab API in a
+controlled environment, and nothing here changes that responsibility: whoever
+runs the tool answers for the target they chose.
 
-A ferramenta impõe essa restrição tecnicamente, não só por convenção:
+The tool enforces this technically, not just by convention:
 
-- **`scope.allowed_hosts`** no `config.yaml` é uma allowlist obrigatória. Todo request
-  passa pelo `ScopeGuard` dentro do único cliente HTTP do projeto; um host fora da
-  lista é rejeitado **antes de a conexão ser aberta** — inclusive a cada salto de um
-  redirecionamento HTTP, não só na requisição inicial (um alvo malicioso ou mal
-  configurado não consegue usar um `3xx` pra desviar o scanner pra outro host).
-- O scanner **se recusa a iniciar** se o host do `target.base_url` não estiver na
-  allowlist — configuração incoerente falha cedo, com mensagem explícita.
-- **Não-destrutivo por padrão:** endpoints `DELETE`/`PUT`/`PATCH` são pulados a menos
-  que `engine.test_destructive: true` seja definido explicitamente.
-- **A coleta inicial só usa métodos seguros.** Um endpoint declarado como `POST` é
-  sondado com `GET` — a fase que monta a baseline nunca cria nem destrói nada no alvo.
-- **Gentil por design:** worker pool + rate limiter evitam derrubar o próprio alvo.
+- **`scope.allowed_hosts`** in `config.yaml` is a mandatory allowlist. Every
+  request passes through the `ScopeGuard` inside the project's single HTTP
+  client; a host outside the list is rejected **before the connection ever
+  opens** — including every hop of an HTTP redirect, not just the initial
+  request (a malicious or misconfigured target cannot use a `3xx` to steer
+  the scanner to another host).
+- The scanner **refuses to start** if `target.base_url`'s host is not in the
+  allowlist — an incoherent configuration fails early, with an explicit
+  message.
+- **Non-destructive by default:** `DELETE`/`PUT`/`PATCH` endpoints are
+  skipped unless `engine.test_destructive: true` is set explicitly.
+- **Collection only ever uses safe methods.** An endpoint declared as `POST`
+  is probed with `GET` — the phase that builds the baseline never creates or
+  destroys anything on the target.
+- **Gentle by design:** a worker pool and rate limiter keep the scanner from
+  taking its own target down.
 
 ---
 
-## Requisitos
+## Contents
 
-- Go 1.25 ou superior (veja `go.mod`). O piso é ditado pelas dependências
-  (`kin-openapi`, `golang.org/x/time`), não pelo código do scanner em si.
+- [Requirements](#requirements)
+- [Build](#build)
+- [Configuration](#configuration)
+- [Environment variables](#environment-variables)
+- [Usage](#usage)
+- [Checks](#checks)
+- [Confirming a finding: the `attack` stage](#confirming-a-finding-the-attack-stage)
+- [Lab](#lab)
+- [Architecture](#architecture)
+- [Testing](#testing)
+- [License](#license)
+
+---
+
+## Requirements
+
+- Go 1.25 or later (see `go.mod`). The floor is set by the dependencies
+  (`kin-openapi`, `golang.org/x/time`), not by the scanner's own code.
+
+`go.mod` also pins an exact `toolchain` version, one patch release ahead of
+the `go` directive's minimum, for a reason worth knowing before it costs you
+a debugging session: **`golangci-lint` and `govulncheck` are compiled against
+a specific Go version and fail with `export data version N is greater than
+maximum supported version M` when the local Go is newer** — the errors
+surface inside the standard library and look nothing like this repository,
+which reads as "lint is broken here" rather than what it is. Prefixing the
+command with the pinned version fixes it:
+
+```bash
+GOTOOLCHAIN=go1.25.14 golangci-lint run ./...
+GOTOOLCHAIN=go1.25.14 go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+```
+
+CI already runs with the right toolchain; this only matters for a local Go
+newer than the pin.
 
 ## Build
 
@@ -43,212 +83,107 @@ A ferramenta impõe essa restrição tecnicamente, não só por convenção:
 go build -o scanner ./cmd/scanner
 ```
 
-## Configuração
+## Configuration
 
-Copie o exemplo comentado e ajuste para o seu laboratório:
+Copy the annotated example and adjust it for your lab:
 
 ```bash
-cp configs/config.yaml meu-lab.yaml
+cp configs/config.yaml my-lab.yaml
 ```
 
-Campos obrigatórios (a ferramenta valida todos e reporta **todos** os que faltarem
-de uma vez, não um por execução):
+Required fields (the tool validates all of them and reports **every** one
+that is missing at once, not one failure per run):
 
-| Campo | Descrição |
+| Field | Description |
 |---|---|
-| `schema_version` | Precisa ser `1` |
-| `target.base_url` | URL absoluta da API sob teste |
-| `scope.allowed_hosts` | Allowlist de `host:porta`; precisa incluir o host do target |
-| `engine.max_concurrency` | Tamanho do worker pool (> 0) |
-| `engine.requests_per_second` | Limite de taxa (> 0) |
-| `engine.timeout` | Deadline global da execução, ex. `5m` |
-| `checks.enabled` | Lista de checks a executar |
+| `schema_version` | Must be `1` |
+| `target.base_url` | Absolute URL of the API under test |
+| `scope.allowed_hosts` | Allowlist of `host:port`; must include the target's own host |
+| `engine.max_concurrency` | Worker pool size (> 0) |
+| `engine.requests_per_second` | Rate limit (> 0) |
+| `engine.timeout` | Global run deadline, e.g. `5m` |
+| `checks.enabled` | List of checks to run |
 
-Opcionais do `engine`: `burst` (rajada antes da taxa sustentada, default 1),
-`request_timeout` (limite por request, default 30s — sem ele uma rota pendurada
-prende um worker até o deadline global) e `test_creates` (permite que checks
-ativos enviem corpo, o que passa a **criar recursos** em rotas POST; desligado
-por padrão, e separado de `test_destructive` porque criar é recuperável e apagar
-não).
+Optional under `engine`: `burst` (requests allowed before the sustained rate
+applies, default 1), `request_timeout` (per-request limit, default 30s —
+without it, one hung route can pin a worker until the global deadline fires)
+and `test_creates` (lets active checks send a request body, which starts
+**creating resources** on POST routes; off by default, and kept separate
+from `test_destructive` because creating is recoverable and deleting is
+not).
 
-O bloco **`auth` é opcional**: um alvo cujo spec não declara nenhuma rota
-protegida pode ser escaneado sem seção `auth` alguma. Quando presente, ele é
-**tudo-ou-nada** — se qualquer campo de auth aparecer, o conjunto completo é
-exigido (`login_endpoint`, `token_path`, `credentials.username`,
-`credentials.password`), porque um bloco pela metade quase sempre é um erro
-(chave digitada errada, campo esquecido). Se o spec tiver rotas protegidas mas
-o config não tiver bloco `auth`, o `scan`/`attack` falha com mensagem clara em
-vez de escanear as rotas sem autenticação.
+The **`auth` block is optional**: a target whose spec declares no protected
+routes can be scanned with no `auth` section at all. When present, it is
+**all-or-nothing** — if any auth field is set, the full set is required
+(`login_endpoint`, `token_path`, `credentials.username`,
+`credentials.password`), because a half-filled block is almost always a
+mistake (a typo'd key, a forgotten field). If the spec has protected routes
+but the config carries no `auth` block, `scan`/`attack` fails with a clear
+message instead of scanning the routes unauthenticated.
 
-| Campo (auth, opcional) | Descrição |
+| Field (`auth`, optional) | Description |
 |---|---|
-| `auth.login_endpoint` | Rota de login, resolvida contra o `base_url` |
-| `auth.credentials.username` / `password` | Credenciais do lab |
-| `auth.credentials.username_field` | Opcional, default `"username"` — chave JSON que carrega `username` no corpo do login (ex. `email`, para um alvo que loga por e-mail) |
-| `auth.token_path` | Caminho em notação de ponto até o token no JSON de resposta |
-| `auth.token_header` / `token_prefix` | Header e prefixo em que o token é injetado (default `Authorization` / `"Bearer "`) |
-| `auth.extra_headers` | Opcional, só no request de login — para um endpoint que exige um header apenas *presente* (defesa CSRF), independente do valor |
-| `auth.secondary_credentials` | Opcional; segundo usuário para o `idor`. Mesmo endpoint e token handling, só as credenciais mudam. Sem ele, o `idor` pula |
+| `auth.login_endpoint` | Login route, resolved against `base_url` |
+| `auth.credentials.username` / `password` | Lab credentials |
+| `auth.credentials.username_field` | Optional, default `"username"` — the JSON key `username` is sent under in the login body (e.g. `email`, for a target that logs in by email) |
+| `auth.token_path` | Dot-notation path to the token in the JSON response |
+| `auth.token_header` / `token_prefix` | Header and prefix the token is injected under (default `Authorization` / `"Bearer "`) |
+| `auth.extra_headers` | Optional, login request only — for an endpoint that requires a header to merely be *present* (a CSRF defense), independent of its value |
+| `auth.secondary_credentials` | Optional; a second account for `idor`. Same login endpoint and token handling, only the credentials differ. Without it, `idor` skips |
 
-### Variáveis de ambiente
+### Environment variables
 
-Segredos **nunca** vão no arquivo de configuração. Escreva-os como `${VAR}` e
-exporte antes de rodar — a expansão acontece nos valores do YAML (comentários são
-ignorados), e uma variável não definida aborta a execução com o nome dela na
-mensagem, em vez de mandar o literal `${VAR}` como senha para o alvo.
+Secrets **never** go in the configuration file. Write them as `${VAR}` and
+export them before running — expansion happens on the parsed YAML values
+(comments are left alone), and an unset variable aborts the run naming it,
+instead of sending the literal `${VAR}` to the target as a password.
 
-| Variável | Usada em | Descrição |
+| Variable | Used in | Description |
 |---|---|---|
-| `LAB_PASSWORD` | `auth.credentials.password` no `configs/config.yaml` de exemplo | Senha do usuário de teste do laboratório |
+| `LAB_PASSWORD` | `auth.credentials.password` in the example `configs/config.yaml` | Password of the lab's test user |
 
 ```bash
-export LAB_PASSWORD='sua-senha-de-lab'
+export LAB_PASSWORD='your-lab-password'
 ```
 
-Qualquer `${OUTRA_VAR}` que você adicionar ao seu config passa a ser obrigatória da
-mesma forma.
+Any `${OTHER_VAR}` you add to your own config becomes required the same way.
 
 ---
 
-## Uso
+## Usage
 
-O pipeline é dividido em três subcomandos encadeados por arquivos JSON versionados.
-Cada arquivo intermediário é o contrato entre estágios: versionável no git, revisável
-à mão antes do `attack`, e reexecutável em outra máquina.
+The pipeline is four subcommands chained by versioned JSON files. Each
+intermediate file is the contract between stages: git-diffable, reviewable
+by hand before `attack` runs, and re-runnable on a different machine.
 
 ```bash
 scanner scan   --spec openapi.yaml --config config.yaml --out findings.json
 scanner attack --in findings.json  --config config.yaml --out confirmed.json
 scanner report --in confirmed.json --out report.html [--json report.json] [--sarif report.sarif]
-scanner diff   before.json after.json [--fail-on high]     # exit 2 = piorou
+scanner diff   before.json after.json [--fail-on high]     # exit 2 = regressed
 ```
 
-- **`scan`** — importa as rotas do OpenAPI, autentica no alvo, roda os checks e grava
-  `findings.json` (suspeitas, `confirmed: false`) com um bloco de cobertura que presta
-  contas de toda rota examinada, pulada ou falha — para que uma lista de findings vazia
-  nunca se confunda com um alvo limpo.
-- **`attack`** — reproduz cada suspeita com uma prova de conceito não-destrutiva e
-  grava `confirmed.json`, carregando a cobertura do scan adiante sem alterá-la.
-- **`report`** — lê `confirmed.json` e grava `report.html` + `report.json`, e com
-  `--sarif`, um SARIF 2.1.0 que o GitHub Code Scanning lê nativamente. Resumo executivo
-  por severidade, por achado o check/endpoint/OWASP/evidência/recomendação, e as tabelas
-  de cobertura (examinado / não examinado).
-- **`diff`** — compara dois arquivos de estágio e reporta `+novo`, `-resolvido`,
-  `? não examinado` e cobertura perdida. Um finding que sumiu só é "resolvido" quando a
-  execução nova de fato chegou a um veredito naquela rota — do contrário some junto com
-  a informação, não com o problema. Sai com código 2 quando algo piora. Ver
-  [`doc/ci-gate.md`](doc/ci-gate.md).
+- **`scan`** — imports routes from the OpenAPI spec, authenticates against
+  the target, runs the enabled checks, and writes `findings.json`
+  (suspicions, `confirmed: false`) with a **coverage** block that accounts
+  for every route examined, skipped, or failed — so an empty findings list
+  can never be mistaken for a clean target.
+- **`attack`** — reproduces each suspicion with a non-destructive proof of
+  concept and writes `confirmed.json`, carrying scan's coverage forward
+  unchanged.
+- **`report`** — reads `confirmed.json` and writes `report.html` +
+  `report.json`, and with `--sarif`, a SARIF 2.1.0 file GitHub Code Scanning
+  reads natively. An executive summary by severity up top, then per finding
+  the check, endpoint, OWASP category, evidence, and a remediation note; and
+  coverage tables (examined / not examined).
+- **`diff`** — compares two stage files and reports `+new`, `-resolved`,
+  `? not examined`, and lost coverage. A finding that disappeared is only
+  "resolved" when the newer run actually reached a verdict on that route —
+  otherwise it vanishes along with the information, not the problem. Exits
+  with code 2 when something got worse. See
+  [`doc/ci-gate.md`](doc/ci-gate.md) for wiring this into CI.
 
-### Estado atual
-
-Os três estágios e todos os checks planejados estão implementados. A evolução
-completa — a auditoria que a guiou, as decisões e as cinco etapas — está em
-[`doc/security-scanner-evolucao.md`](doc/security-scanner-evolucao.md).
-
-| Estágio | Estado |
-|---|---|
-| `scan` | Importa o spec, autentica, coleta baseline + probes por endpoint, roda os checks e grava `findings.json` com um bloco de **cobertura**. |
-| `attack` | Lê `findings.json`, reproduz cada suspeita com uma PoC não-destrutiva e grava `confirmed.json`, carregando a cobertura do scan adiante. |
-| `report` | Lê `confirmed.json` e grava `report.html` + `report.json`, e opcionalmente **SARIF** (`--sarif`) para o GitHub Code Scanning. Não toca a rede. |
-| `diff` | Compara dois arquivos de estágio e diz o que mudou; sai com código 2 quando algo piora, para servir de gate de CI. Ver [`doc/ci-gate.md`](doc/ci-gate.md). |
-
-Nove checks, dos quatro com que o projeto começou:
-
-| Check | Tipo | O que reporta | OWASP |
-|---|---|---|---|
-| `missing-headers` | passivo | Cabeçalhos de segurança ausentes; severidade rebaixada para `low` em resposta que não é documento (JSON), onde CSP/X-Frame não têm o que restringir. | A05 |
-| `exposed-secrets` | passivo | Credenciais no corpo, inclusive em comentários HTML/JS. O valor é **redigido** no relatório; o discriminador do ID é um digest do valor, não a posição. | A02 |
-| `cache-on-authenticated` | passivo | Resposta de rota autenticada que um cache pode guardar (`public`, ou sem `no-store`). Só julga resposta 2xx — página de erro não é a resposta da rota. | A05 |
-| `cors-misconfigured` | passivo¹ | Política de CORS que reflete origem arbitrária. **Ausência de CORS é o estado seguro** — lógica invertida em relação a `missing-headers`. | A05 |
-| `dangerous-http-methods` | ativo | TRACE habilitado, provado por eco. `low`: Cross-Site Tracing não é mais alcançável por browsers; o que resta é divulgação de informação. | A05 |
-| `sqli-boolean` | ativo | SQLi boolean-based: compara a resposta injetada contra o ruído medido do próprio endpoint. | A03 |
-| `xss-reflected` | ativo | XSS refletido: marcador determinístico que só conta se voltar cru **e** não estiver na baseline. | A03 |
-| `auth-required` | ativo | Rota que o spec declara protegida e responde 2xx **sem** credencial. Oráculo é status code, então conclui onde a injeção não consegue. `critical`. | A01 |
-| `idor` | ativo | Recurso de um usuário lido com a sessão de outro. Precisa de `auth.secondary_credentials`; sem elas, pula nomeando a config. | A01 |
-| `jwt-weak` | ativo | `alg:none` aceito (`critical`, com PoC) e `exp` ausente/longo demais (`low`, estrutural). Pula quando o token não é JWT. | A02 |
-| `verbose-errors` | ativo | Input malformado que faz vazar stack trace, SQL cru ou path — ausente da baseline. | A05 |
-| `open-redirect` | ativo | Parâmetro de redirect que aceita host externo. Lê o `Location` do 3xx sem segui-lo (o ScopeGuard bloqueia o salto). | A01 |
-
-¹ Ativo na coleta (um probe com `Origin:` é enviado uma vez por endpoint), passivo no check.
-
-Os padrões de `exposed-secrets` ficam em `internal/checks/patterns/secrets.txt`,
-embutidos via `go:embed` — dá para estender a lista sem tocar na lógica do check.
-Cada padrão declara confiança `high` ou `low`: os genéricos (`low`) só viram
-finding depois de passar por um filtro de placeholders, para que
-`"password": "changeme"` num exemplo de documentação não vire ruído.
-
-O `sqli-boolean` é o primeiro check **ativo**: em vez de ler a baseline coletada
-uma vez pelo engine, ele envia seus próprios requests. Para cada parâmetro de
-query/path do endpoint, mede o ruído de conteúdo dinâmico repetindo um request
-benigno 3 vezes, injeta pares verdadeiro/falso de `internal/checks/payloads/sqli.txt`
-(também via `go:embed`) e só marca suspeita se a diferença de tamanho entre as
-duas respostas for **maior** que o ruído já observado — é a defesa contra
-falso-positivo descrita no invariante #4. O `CapturedRequest` de cada finding
-carrega a URL exata que produziu o resultado, pronta para o estágio `attack`
-(ou um `curl` manual) reproduzir.
-
-**Segredos são redigidos no relatório** (`AKIA****************`, com o tamanho).
-Um scanner de secrets que escreve o segredo dentro de um `findings.json`
-versionado mudou o vazamento de lugar em vez de encontrá-lo.
-
-Um nome desconhecido em `checks.enabled` aborta a execução antes de qualquer
-request — um typo não desabilita um check em silêncio.
-
-O `report` usa `html/template` (não `text/template`) de propósito: `Evidence` e
-`Request` carregam conteúdo potencialmente controlado por quem foi atacado —
-payload de SQLi, marcador de XSS refletido, trecho cru de resposta — e isso
-precisa sair como texto inerte na página, nunca como HTML executável. Achados
-são ordenados por severidade e depois por confirmado-antes-de-não-confirmado,
-não pela ordem em que o scan os encontrou, para que o leitor veja primeiro o
-que mais importa. `report.json` carrega o mesmo resumo e a mesma ordem, então
-os dois arquivos são a mesma informação em dois formatos, não dois relatórios
-diferentes. O texto de recomendação por check vive só no pacote `report`
-(não em `model.Finding`): é conteúdo de apresentação, não parte do contrato
-JSON versionado das outras duas etapas.
-
-### `attack`: prova de conceito não-destrutiva
-
-`attack` é uma execução separada do binário — não compartilha nada com o `scan`
-além dos arquivos, autentica de novo do zero — que lê cada `Finding` de
-`findings.json` e tenta confirmá-lo com uma técnica específica do check que o
-gerou, via um pequeno registry (`internal/attack`, mesmo padrão `init()` de
-`internal/checks`):
-
-| Check | Confirmação |
-|---|---|
-| `sqli-boolean` | Mede o ruído do endpoint de novo, agora, e só confirma se a diferença verdadeiro/falso ainda for maior que o ruído — o alvo pode ter mudado desde o `scan`. Confirmado isso, tenta extrair **só o nome do banco** via `UNION SELECT` (nunca escrita: sem `DROP`, sem `UPDATE`, só leitura), testando contagem de colunas e algumas funções comuns (`database()`, `current_database()`, `DB_NAME()`, `sqlite_version()`). A extração é *best-effort*: se não funcionar contra o motor do alvo, o finding continua confirmado pela reprodução booleana — só a nota de extração muda. |
-| `xss-reflected` | Reenvia com um marcador **novo e único** (não o payload original do scan, para não aproveitar uma resposta em cache) e confirma só se ele voltar sem escape HTML — reflexão escapada não é explorável e é reportada como tal, não como "não reproduziu". |
-
-Um `CheckName` sem confirmer registrado (`missing-headers`, `exposed-secrets` — são
-observações diretas de uma única resposta já coletada, não têm o que "reproduzir")
-passa por `confirmed.json` sem alteração, listado como `skipped`, nunca promovido
-a `Confirmed: true` sem verificação real.
-
-Endpoint `Destructive` é respeitado de novo aqui, independente do que o `scan` já
-fez — `attack` é um processo separado e não assume que a decisão de outro processo
-ainda vale.
-
-Exemplo:
-
-```console
-$ scanner attack --in findings.json --config configs/config.yaml
-target:     http://127.0.0.1:8099
-findings:   17 (0 destructive)
-
-wrote confirmed.json (1 confirmed, 16 skipped, 0 failed, 0 not confirmed)
-  skipped: missing-headers on GET /health: no PoC available for check "missing-headers"
-  ...
-```
-
-O finding de `sqli-boolean` confirmado carrega a URL exata que extraiu o dado —
-reproduzível com `curl` puro, sem o scanner:
-
-```console
-$ curl 'http://127.0.0.1:8099/items?q=%27+UNION+SELECT+CONCAT%28%27ATTACKPOC_%27%2Cdatabase%28%29%2C%27_ENDPOC%27%29--+-'
-{"items": [{"id": 1, "name": "ATTACKPOC_labdb_billing_ENDPOC"}]}
-```
-
-Exemplo de execução do `scan`:
+Example `scan` run:
 
 ```console
 $ export LAB_PASSWORD='...'
@@ -263,56 +198,170 @@ checks:     exposed-secrets, missing-headers, sqli-boolean, xss-reflected
 wrote findings.json (17 findings, 0 skipped, 0 failed)
 ```
 
-Endpoints que não puderam ser examinados aparecem como `skipped`, com o motivo —
-nunca como "limpos".
+Endpoints that could not be examined show up as `skipped`, with the reason —
+never as "clean".
 
-Todos os checks planejados estão implementados (ver a tabela em *Estado atual*).
-A ordem em que foram construídos e o porquê de cada decisão estão em
-`doc/security-scanner-projeto.md` §7 e `doc/security-scanner-evolucao.md` §6.
+---
+
+## Checks
+
+Twelve checks, up from the four this project started with. Full rationale
+for each — including the audit that found the ones worth adding and the
+live measurements behind their design — is in
+[`doc/security-scanner-evolucao.md`](doc/security-scanner-evolucao.md).
+
+| Check | Kind | What it reports | OWASP |
+|---|---|---|---|
+| `missing-headers` | passive | Missing security headers; severity downgraded to `low` on a response that is not a document (JSON), where CSP/X-Frame have nothing to restrict. | A05 |
+| `exposed-secrets` | passive | Credentials in the body, including inside HTML/JS comments. The value is **redacted** in the report; the finding's ID discriminator is a digest of the value, never its position. | A02 |
+| `cache-on-authenticated` | passive | An authenticated route's response that a cache is allowed to keep (`public`, or missing `no-store`). Only judges a 2xx — an error page is not the route's own response. | A05 |
+| `cors-misconfigured` | passive¹ | A CORS policy that reflects an arbitrary origin. **The absence of CORS is the secure state** — inverted logic relative to `missing-headers`. | A05 |
+| `dangerous-http-methods` | active | TRACE enabled, proven by echo. `low`: Cross-Site Tracing has not been reachable from a browser for years; what remains is information disclosure. | A05 |
+| `sqli-boolean` | active | Boolean-based SQLi: compares the injected response against the endpoint's own measured noise. | A03 |
+| `xss-reflected` | active | Reflected XSS: a deterministic marker that only counts if it comes back raw **and** is absent from the baseline. | A03 |
+| `auth-required` | active | A route the spec declares protected answers 2xx **without** credentials. The oracle is the status code, so it concludes where injection checks cannot. `critical`. | A01 |
+| `idor` | active | One user's resource read with another user's session. Needs `auth.secondary_credentials`; without it, skips naming the missing config. | A01 |
+| `jwt-weak` | active | `alg:none` accepted (`critical`, with a PoC) and a missing/overlong `exp` (`low`, structural). Skips when the session token is not a JWT. | A02 |
+| `verbose-errors` | active | Malformed input that leaks a stack trace, raw SQL, or a filesystem path — absent from the baseline. | A05 |
+| `open-redirect` | active | A redirect-shaped parameter that accepts an external host. Reads the `Location` off the 3xx without following it (the `ScopeGuard` blocks the hop). | A01 |
+
+¹ Active during collection (one probe carrying `Origin:` is sent once per
+endpoint); passive in the check itself.
+
+`exposed-secrets`' patterns live in `internal/checks/patterns/secrets.txt`,
+embedded via `go:embed` — the list can grow without touching the check's
+logic. Each pattern declares `high` or `low` confidence: the generic ones
+(`low`) only become a finding after clearing a placeholder filter, so
+`"password": "changeme"` in example documentation does not turn into noise.
+
+`sqli-boolean` was the first **active** check: instead of reading the
+baseline the engine already collected, it sends its own requests. For each
+query/path parameter it measures dynamic-content noise by repeating a
+benign request 3 times, injects true/false pairs from
+`internal/checks/payloads/sqli.txt` (also via `go:embed`), and only flags a
+suspicion if the size difference between the two responses is **larger**
+than the noise already observed — the false-positive defense described in
+invariant #4. When the OpenAPI spec supplies a real, valid value for a
+parameter — an `example`, an enum member, or a synthetic UUID for
+`format: uuid` — the check uses that instead of a generic filler, which is
+what lets it reach a verdict on a strictly-typed parameter that would
+otherwise reject the filler exactly as it rejects an injection payload. Each
+finding's `CapturedRequest` carries the exact URL that produced the result,
+ready for the `attack` stage (or a plain `curl`) to reproduce.
+
+**Secrets are redacted in the report** (`AKIA****************`, with the
+length). A secrets scanner that writes the secret into a committed
+`findings.json` has relocated the leak, not found it.
+
+An unknown name in `checks.enabled` aborts the run before any request is
+sent — a typo does not silently disable a check.
+
+The `report` uses `html/template` (never `text/template`) on purpose:
+`Evidence` and `Request` carry content potentially controlled by whoever was
+attacked — an SQLi payload, a reflected XSS marker, a raw response snippet —
+and it has to render as inert text on the page, never as executable HTML.
+Findings are ordered by severity and then confirmed-before-unconfirmed, not
+by scan order, so the reader sees what matters most first. `report.json`
+carries the same summary and the same ordering, so the two files are the
+same information in two formats, not two different reports. Remediation
+text per check lives only in the `report` package (not on `model.Finding`):
+it is presentation content, not part of the other two stages' versioned
+JSON contract.
+
+---
+
+## Confirming a finding: the `attack` stage
+
+`attack` is a separate run of the binary — it shares nothing with `scan`
+beyond the files, and authenticates again from scratch — that reads each
+`Finding` in `findings.json` and tries to confirm it with a technique
+specific to the check that produced it, via a small registry
+(`internal/attack`, the same `init()` pattern as `internal/checks`):
+
+| Check | Confirmation |
+|---|---|
+| `sqli-boolean` | Measures the endpoint's noise again, now, and only confirms if the true/false difference is still larger than the noise — the target may have changed since `scan`. Once confirmed, it attempts to extract **only the database name** via `UNION SELECT` (never a write: no `DROP`, no `UPDATE`, read-only), trying column counts and a handful of common functions (`database()`, `current_database()`, `DB_NAME()`, `sqlite_version()`). Extraction is best-effort: if it does not work against the target's engine, the finding stays confirmed by the boolean reproduction alone — only the extraction note changes. |
+| `xss-reflected` | Resends with a **fresh, unique marker** (not the scan's original payload, so a cached response cannot be mistaken for a live one) and confirms only if it comes back unescaped — an escaped reflection is not exploitable and is reported as such, never as "did not reproduce". |
+| `auth-required` | Replays the request with no credentials at all. A 2xx confirms; anything else means the route is not open now — the finding may have been wrong, or the control was added since the scan. |
+| `jwt-weak` | Re-forges the `alg:none` token from the current session token's claims (not the one captured at scan time — the proof is that a freshly minted unsigned token is honoured *now*) and confirms if the target still accepts it. The structural `exp` finding has no PoC: it is a fact read off the token, not a suspicion, so `attack` reports it `skipped` — "nothing to reproduce" — rather than leaving it `confirmed: false`, which would read as suspected-and-unproven. |
+| `verbose-errors` | Resends both the malformed request and a benign one at the same parameter, and confirms only if the leak appears with the malformed value and not the benign one — proving the malformed input is the cause, not a rerun of the same request. |
+| `open-redirect` | Replays the request and reads the `Location` off the 3xx without following it — the `ScopeGuard` is what actually blocks the hop, and the finding is what the target tried to do, not where the scanner ended up. |
+
+A `CheckName` with no registered confirmer (`missing-headers`,
+`exposed-secrets`, `cache-on-authenticated`, `cors-misconfigured`,
+`dangerous-http-methods`, `idor` — direct observations or comparisons that
+have nothing further to "reproduce") passes through to `confirmed.json`
+unchanged, listed as `skipped`, never promoted to `confirmed: true` without
+real verification.
+
+`Endpoint.Destructive` is honoured again here, independent of whatever
+`scan` already decided — `attack` is a separate process and does not assume
+another process's decision still holds.
+
+Example:
+
+```console
+$ scanner attack --in findings.json --config configs/config.yaml
+target:     http://127.0.0.1:8099
+findings:   17 (0 destructive)
+
+wrote confirmed.json (1 confirmed, 16 skipped, 0 failed, 0 not confirmed)
+  skipped: missing-headers on GET /health: no PoC available for check "missing-headers"
+  ...
+```
+
+A confirmed `sqli-boolean` finding carries the exact URL that extracted the
+data — reproducible with plain `curl`, no scanner needed:
+
+```console
+$ curl 'http://127.0.0.1:8099/items?q=%27+UNION+SELECT+CONCAT%28%27ATTACKPOC_%27%2Cdatabase%28%29%2C%27_ENDPOC%27%29--+-'
+{"items": [{"id": 1, "name": "ATTACKPOC_labdb_billing_ENDPOC"}]}
+```
 
 ---
 
 ## Lab
 
-`lab/` é uma API em Go **propositalmente vulnerável**, atrás de um Postgres real,
-só para dar ao scanner um alvo próprio pra rodar o ciclo completo contra —
-nada aqui deve rodar em outro lugar além da sua máquina. É um módulo Go
-separado (`lab/go.mod`); `go build ./...` na raiz do repo não o toca.
+`lab/` is a **deliberately vulnerable** Go API behind a real Postgres, only
+to give the scanner a target of its own to run the full cycle against —
+nothing here should ever run anywhere but your own machine. It is a
+separate Go module (`lab/go.mod`); `go build ./...` from the repo root never
+touches it.
 
-| Vulnerabilidade | Onde | Como |
+| Vulnerability | Where | How |
 |---|---|---|
-| SQLi boolean-based | `GET /items?q=` | `q` é concatenado sem sanitização num `WHERE name = '<q>'`. Detectado por `sqli-boolean`; `attack` reproduz e ainda extrai o nome do banco via `UNION SELECT` de verdade contra o Postgres. |
-| Secrets expostos | `GET /debug` | Uma chave no formato AWS (o exemplo público da própria AWS, não é credencial real) e um `api_key` genérico. Detectado por `exposed-secrets`. |
-| Headers ausentes | toda resposta | Nenhuma rota seta `CSP`/`HSTS`/`X-Frame-Options`/`X-Content-Type-Options`. Detectado por `missing-headers`. |
-| XSS refletido | `GET /search?term=` | `term` volta sem escape num `<html>`. Detectado por `xss-reflected`; `attack` reproduz com um marcador novo e independente. |
+| Boolean-based SQLi | `GET /items?q=` | `q` is concatenated unsanitized into a `WHERE name = '<q>'`. Caught by `sqli-boolean`; `attack` reproduces it and extracts the real database name via `UNION SELECT` against Postgres. |
+| Exposed secrets | `GET /debug` | An AWS-shaped key (AWS's own public documentation example, not a real credential) and a generic `api_key`. Caught by `exposed-secrets`. |
+| Missing headers | every response | No route sets `CSP`/`HSTS`/`X-Frame-Options`/`X-Content-Type-Options`. Caught by `missing-headers`. |
+| Reflected XSS | `GET /search?term=` | `term` comes back unescaped inside `<html>`. Caught by `xss-reflected`; `attack` reproduces it with a fresh, independent marker. |
 
-`GET /items/{id}` é deliberadamente **seguro** (parâmetro vinculado, não
-concatenado) — um controle pra notar se o scanner desse falso positivo nele.
-`PUT`/`DELETE /items/{id}` existem só pra exercitar o gate de destrutivo
-(ficam pulados por padrão, já que `configs/config.yaml` traz
+`GET /items/{id}` is deliberately **safe** (a bound parameter, not
+concatenated) — a control to notice if the scanner ever produced a false
+positive on it. `PUT`/`DELETE /items/{id}` exist only to exercise the
+destructive gate (skipped by default, since `configs/config.yaml` ships
 `engine.test_destructive: false`).
 
-### Subindo o lab
+### Bringing the lab up
 
 ```bash
 docker compose up -d --build
 ```
 
-Isso sobe dois serviços: `db` (Postgres, com schema e seed em `lab/db/init.sql`)
-e `lab-api` (porta `8080` no host, só sobe depois que `db` fica saudável). A
-senha do usuário `admin` do lab já vem com um valor padrão
-(`lab-pass-only-123`) que bate com o comentário de `configs/config.yaml` —
-pra usar outra, exporte `LAB_PASSWORD` **antes** de subir o compose (ela é
-lida como variável de ambiente do `docker compose`, não do scanner).
+This starts two services: `db` (Postgres, schema and seed data in
+`lab/db/init.sql`) and `lab-api` (host port `8080`, only starts once `db` is
+healthy). The `admin` user's password already ships with a default
+(`lab-pass-only-123`) matching the comment in `configs/config.yaml` — to use
+a different one, export `LAB_PASSWORD` **before** bringing compose up (it is
+read as an environment variable by `docker compose`, not by the scanner).
 
 ```bash
 curl http://localhost:8080/health   # {"ok":true}
 ```
 
-### Rodando o ciclo completo contra ele
+### Running the full cycle against it
 
-`configs/config.yaml` já aponta pro lab (`localhost:8080`) sem precisar editar
-nada — só exportar a mesma senha:
+`configs/config.yaml` already points at the lab (`localhost:8080`) with
+nothing to edit — just export the same password:
 
 ```bash
 export LAB_PASSWORD='lab-pass-only-123'
@@ -322,90 +371,96 @@ scanner attack --in findings.json      --config configs/config.yaml --out confir
 scanner report --in confirmed.json     --out report.html
 ```
 
-O `scan` deve achar `sqli-boolean` em `/items`, `exposed-secrets` (2x) em
-`/debug` e `missing-headers` em todas as rotas passíveis de baseline. O
-`attack` deve confirmar a suspeita de SQLi e, contra o Postgres real, extrair
-o nome do banco (`labapi`) via `UNION SELECT` — dá pra conferir em
-`confirmed.json` sem precisar confiar só no texto deste README. Abra
-`report.html` num navegador pra ver o resultado consolidado.
+`scan` should find `sqli-boolean` on `/items`, `exposed-secrets` (2×) on
+`/debug`, and `missing-headers` on every route a baseline could be
+collected for. `attack` should confirm the SQLi suspicion and, against the
+real Postgres, extract the database name (`labapi`) via `UNION SELECT` —
+check `confirmed.json` rather than taking this README's word for it. Open
+`report.html` in a browser for the consolidated result.
 
-### Derrubando o lab
+### Tearing the lab down
 
 ```bash
-docker compose down -v   # -v também remove o volume do Postgres
+docker compose down -v   # -v also removes the Postgres volume
 ```
 
 ---
 
-## Arquitetura
+## Architecture
 
-Hexagonal leve (ports/adapters), para que os checks sejam testáveis contra um
-`HTTPClient` falso, sem rede real.
+Lightweight hexagonal (ports/adapters), so checks are testable against a
+fake `HTTPClient` with no real network.
 
 ```
-cmd/scanner/          CLI e composition root — único lugar que decide os adapters
+cmd/scanner/          CLI and composition root — the only place that wires adapters
 internal/
-  ports/              interfaces: HTTPClient
+  ports/               interfaces: HTTPClient
   adapters/
-    httpclient/       cliente HTTP real; é aqui que o ScopeGuard é aplicado
-    openapi/          parser de spec OpenAPI 3 → []Endpoint
-    config/           leitura e validação do config.yaml
+    httpclient/        the real HTTP client; this is where ScopeGuard is applied
+    openapi/            OpenAPI 3 spec parser → []Endpoint (also computes Parameter.Sample)
+    config/             config.yaml reading and validation
   core/
-    model/            Endpoint, Check, Finding, Evidence
-    engine/           coleta de baseline + worker pool + rate limiter
-    auth/             login automático + re-auth em 401
-    scope/            ScopeGuard (allowlist de hosts)
-  checks/             um arquivo por check, auto-registro via init()
-    registry.go       RegisterCheck + resolução de checks.enabled
-    headers.go        missing-headers (passivo)
-    secrets.go        exposed-secrets (passivo)
-    sqli.go           sqli-boolean (ativo)
-    xss.go            xss-reflected (ativo)
-    patterns/         regexes de detecção (secrets), via go:embed
-    payloads/         payloads de ataque (sqli) e templates de marcador (xss), via go:embed
-  attack/             confirmers de PoC pro estágio attack, mesmo padrão init()
-    attack.go         Register + dispatch por CheckName
-    sqli.go           sqli-boolean: re-verificação + extração via UNION
-    xss.go            xss-reflected: reflexão de marcador fresco
-  envexpand/          expansão de ${VAR} compartilhada
-  report/             template HTML (go:embed) + writer JSON
-configs/              config.yaml de exemplo
-lab/                  API vulnerável de estudo (módulo Go separado) + spec + init.sql
-docker-compose.yml    sobe lab/ atrás de um Postgres real — ver §Lab acima
+    model/               Endpoint, Check, Finding, Evidence, Clients
+    engine/              baseline + probe collection, worker pool, rate limiter
+    auth/                automatic login + re-auth on 401
+    scope/               ScopeGuard (host allowlist)
+  checks/               one file per check, self-registered via init()
+    registry.go          RegisterCheck + checks.enabled resolution
+    probe.go             shared active-probe machinery (sendProbe, schema-aware fillers)
+    patterns/             secret-detection regexes, via go:embed
+    payloads/              sqli payloads and xss marker templates, via go:embed
+  attack/                confirmers for the attack stage, same init() pattern
+    attack.go             Register + dispatch by CheckName
+  diff/                  scanner diff: compares two stage files, coverage-aware
+  report/                HTML template (go:embed) + JSON + SARIF writers
+  envexpand/             shared ${VAR} expansion
+configs/                example config.yaml
+tools/reqcount/         counting reverse proxy, used to measure what a scan actually sends
+lab/                     study-purpose vulnerable API (separate Go module) + spec + init.sql
+docker-compose.yml       brings lab/ up behind a real Postgres — see §Lab above
 ```
 
-Detalhes de projeto e justificativas em [`doc/security-scanner-projeto.md`](doc/security-scanner-projeto.md).
+Design details and rationale in
+[`doc/security-scanner-projeto.md`](doc/security-scanner-projeto.md) and
+[`doc/security-scanner-evolucao.md`](doc/security-scanner-evolucao.md).
 
 ---
 
-## Testes
+## Testing
 
 ```bash
-go test ./...              # todos os testes
-go test ./... -race        # detector de race
-go test ./... -cover       # cobertura
-go vet ./...               # análise estática
-golangci-lint run ./...    # lint (errcheck, bodyclose, errorlint, staticcheck…)
+go test ./...              # all tests
+go test ./... -race        # race detector
+go test ./... -cover       # coverage
+go vet ./...                # static analysis
+golangci-lint run ./...     # lint (errcheck, bodyclose, errorlint, staticcheck, …)
+go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...   # known-vulnerable dependencies
 ```
 
-Os testes não tocam a rede externa: checks rodam contra um `HTTPClient` falso
-alimentado por `testdata/`, e os testes de autenticação usam `httptest.Server` em
-loopback. Há testes dedicados para o `ScopeGuard` (host fora da allowlist é
-bloqueado antes de virar conexão) e para o determinismo do parser.
+If your local Go is newer than the pin in `go.mod`, prefix the last two with
+`GOTOOLCHAIN=go1.25.14` — see [Requirements](#requirements) for why.
 
-Há testes de ponta a ponta (`cmd/scanner/pipeline_test.go`) que montam a pilha
-inteira — ScopeGuard, autenticação, rate limiter, coleta e check real — contra um
-`httptest.Server`, e verificam entre outras coisas que a coleta nunca envia um método
-inseguro, que endpoint destrutivo não é tocado, e que dois scans do mesmo alvo
-produzem arquivos byte a byte idênticos. Um deles roda o ciclo `scan` → `attack`
-completo contra um alvo com SQLi de verdade (simulado), incluindo a extração via
-`UNION` — duas execuções de processo separadas, duas autenticações separadas,
-como dois comandos `scanner` reais rodariam.
+Tests never touch the outside network: checks run against a fake
+`HTTPClient` fed from `testdata/`, and authentication tests use an
+`httptest.Server` on loopback. There are dedicated tests for the
+`ScopeGuard` (a host outside the allowlist is blocked before it ever becomes
+a connection) and for the parser's determinism.
 
-O CI (`.github/workflows/ci.yml`) roda gofmt, vet, golangci-lint, testes, race e cobertura.
+End-to-end tests (`cmd/scanner/pipeline_test.go`) assemble the whole stack —
+ScopeGuard, authentication, rate limiter, collection, and a real check —
+against an `httptest.Server`, and verify, among other things, that
+collection never sends an unsafe method, that a destructive endpoint is
+never touched, and that two scans of the same target produce byte-identical
+finding identities. One of them runs the full `scan` → `attack` cycle
+against a target with real (simulated) SQLi, including `UNION` extraction —
+two separate process runs, two separate authentications, exactly as two real
+`scanner` invocations would.
+
+CI (`.github/workflows/ci.yml`) runs gofmt, vet, golangci-lint, govulncheck,
+tests, race, and coverage.
 
 ---
 
-## Licença
+## License
 
-Ver [LICENSE](LICENSE).
+See [LICENSE](LICENSE).
