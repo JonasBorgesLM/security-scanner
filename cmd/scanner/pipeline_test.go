@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -1034,16 +1035,24 @@ func TestPipeline_CoverageSurvivesEveryStage(t *testing.T) {
 	var attacked model.FindingsFile
 	mustReadJSON(t, confirmedPath, &attacked)
 
-	if findUnexamined(attacked.Coverage.Skipped, "DELETE", "/items/{id}") == nil {
-		t.Error("attack dropped scan's coverage instead of carrying it forward")
+	// Attack carries scan's coverage forward verbatim: coverage answers
+	// "what did the scan examine?", which attack does not change. Folding
+	// attack's per-finding outcomes in used to list a route scan examined
+	// under "not examined" as well — a contradiction. So the block must be
+	// exactly what scan wrote, and in particular a route that was examined
+	// must not reappear as skipped.
+	if !reflect.DeepEqual(attacked.Coverage, scanned.Coverage) {
+		t.Errorf("attack changed the coverage block; it must carry scan's forward unchanged\nscan: %+v\nattack: %+v",
+			scanned.Coverage, attacked.Coverage)
 	}
-	if attacked.Coverage.EndpointsTotal != scanned.Coverage.EndpointsTotal {
-		t.Errorf("endpoints_total = %d after attack, want %d unchanged",
-			attacked.Coverage.EndpointsTotal, scanned.Coverage.EndpointsTotal)
+	examinedInScan := map[string]bool{}
+	for _, e := range scanned.Coverage.Examined {
+		examinedInScan[e.Check+" "+e.Method+" "+e.Path] = true
 	}
-	if len(attacked.Coverage.Skipped) <= len(scanned.Coverage.Skipped) {
-		t.Errorf("coverage.skipped did not grow through attack (%d -> %d); missing-headers has no PoC and must be accounted for",
-			len(scanned.Coverage.Skipped), len(attacked.Coverage.Skipped))
+	for _, e := range attacked.Coverage.Skipped {
+		if e.Check != "" && examinedInScan[e.Check+" "+e.Method+" "+e.Path] {
+			t.Errorf("%s on %s %s is in coverage.skipped after attack, but scan examined it", e.Check, e.Method, e.Path)
+		}
 	}
 
 	// --- report -------------------------------------------------------
