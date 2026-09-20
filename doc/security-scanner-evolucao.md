@@ -7,6 +7,15 @@ a ordem de evolução que resulta. Nada aqui descreve código que já existe.
 
 ---
 
+> **Estado (concluído).** As cinco etapas abaixo foram implementadas. O scanner
+> saiu de 4 para 12 checks, ganhou o bloco de cobertura (`schema_version` 3), o
+> `scanner diff`, saída SARIF e um gate de CI documentado. Duas capacidades
+> transversais que o roadmap não previa saíram do caminho: um segundo par de
+> identidades (`Clients.Anonymous`/`Secondary`) e o token exposto ao check
+> (`Clients.SessionToken`), que foram o que destravou `auth-required`, `idor` e
+> `jwt-weak`. As decisões estão nos §4 e §6; a aferição final do critério da
+> Etapa 1 está registrada na issue #33.
+
 ## 1. A régua
 
 O scanner responde **uma** pergunta: *"este comportamento observável está
