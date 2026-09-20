@@ -1,288 +1,299 @@
-# Security Scanner — Evolução: auditoria, decisões e roadmap
+# Security Scanner — Evolution: audit, decisions and roadmap
 
-Complementa `security-scanner-projeto.md`, que continua sendo a fonte de
-verdade da arquitetura **atual**. Este documento registra a auditoria feita
-sobre o código implementado, as decisões estruturais tomadas a partir dela, e
-a ordem de evolução que resulta. Nada aqui descreve código que já existe.
-
----
-
-> **Estado (concluído).** As cinco etapas abaixo foram implementadas. O scanner
-> saiu de 4 para 12 checks, ganhou o bloco de cobertura (`schema_version` 3), o
-> `scanner diff`, saída SARIF e um gate de CI documentado. Duas capacidades
-> transversais que o roadmap não previa saíram do caminho: um segundo par de
-> identidades (`Clients.Anonymous`/`Secondary`) e o token exposto ao check
-> (`Clients.SessionToken`), que foram o que destravou `auth-required`, `idor` e
-> `jwt-weak`. As decisões estão nos §4 e §6; a aferição final do critério da
-> Etapa 1 está registrada na issue #33.
-
-## 1. A régua
-
-O scanner responde **uma** pergunta: *"este comportamento observável está
-correto do ponto de vista de segurança?"* — sob quatro invariantes:
-
-1. **Correção acima de volume** — afirma pouco, com precisão.
-2. **Só afirma com prova** — piso de ruído no scan, confirmer separado no attack.
-3. **Gentil por design** — ScopeGuard + rate limiter + gate não-destrutivo.
-4. **Auditável e comparável** — a saída de cada estágio é revisável à mão e
-   duas execuções sobre o mesmo alvo são comparáveis item a item.
-
-A quarta invariante mudou de redação — a anterior prometia mais do que o
-código entrega. Ver §4.3.
-
-**Teste para qualquer função nova:** é uma pergunta de correção verificável,
-provável de forma gentil, sobre algo observável de fora? Se exige estado
-interno, volume, código-fonte, ou modificar o alvo — fica de fora (§7).
+Complements `security-scanner-projeto.md`, which remains the source of truth
+for the **current** architecture. This document records the audit performed
+on the implemented code, the structural decisions that came out of it, and
+the resulting order of evolution. Nothing here describes code that already
+exists.
 
 ---
 
-## 2. Correções ao desenho proposto
+> **Status (complete).** The five stages below have all been implemented. The
+> scanner went from 4 to 12 checks, gained the coverage block (`schema_version`
+> 3), `scanner diff`, SARIF output and a documented CI gate. Two cross-cutting
+> capabilities the roadmap did not foresee came out of the way: a second pair
+> of identities (`Clients.Anonymous`/`Secondary`) and the token exposed to the
+> check (`Clients.SessionToken`), which are what unlocked `auth-required`,
+> `idor` and `jwt-weak`. The decisions are in §4 and §6; the final measurement
+> against Stage 1's exit criterion is recorded in issue #33.
 
-Quatro pontos do mapa de evolução original não sobreviveram ao contato com o
-código. Registrados aqui porque a conclusão sozinha se perde; o raciocínio é
-o que evita refazer o mesmo erro.
+## 1. The yardstick
 
-### 2.1 Passivo não é sinônimo de gentil
+The scanner answers **one** question: *"is this observable behaviour correct
+from a security standpoint?"* — under four invariants:
 
-`Target.Baseline` é **uma** resposta, obtida com **um** método, sem **nenhum**
-header de request forjado. Qualquer check cuja pergunta seja *"o que acontece
-se eu variar o request?"* é ativo por definição, por mais barato que seja.
+1. **Correctness over volume** — asserts little, precisely.
+2. **Only asserts with proof** — a noise floor in scan, a separate confirmer in attack.
+3. **Gentle by design** — ScopeGuard + rate limiter + non-destructive gate.
+4. **Auditable and comparable** — each stage's output is reviewable by hand,
+   and two runs against the same target are comparable item by item.
 
-| Check proposto como passivo | Realidade |
+The fourth invariant's wording changed — the earlier version promised more
+than the code delivers. See §4.3.
+
+**Test for any new capability:** is it a verifiable correctness question,
+provable gently, about something observable from outside? If it requires
+internal state, volume, source code, or modifying the target — it's out
+(§7).
+
+---
+
+## 2. Corrections to the proposed design
+
+Four points from the original evolution map did not survive contact with the
+code. Recorded here because the conclusion alone gets lost; the reasoning is
+what keeps the same mistake from being made again.
+
+### 2.1 Passive is not a synonym for gentle
+
+`Target.Baseline` is **one** response, obtained with **one** method, with
+**no** forged request header. Any check whose question is *"what happens if I
+vary the request?"* is active by definition, however cheap it is.
+
+| Check proposed as passive | Reality |
 |---|---|
-| `cors-misconfigured` | Middleware CORS correto só emite `Access-Control-Allow-Origin` quando há `Origin` no request. A baseline não manda `Origin` — passivamente só se pega o caso `ACAO: *` sempre-ligado, e a reflexão de origem fica invisível |
-| `dangerous-http-methods` | `TRACE` só se detecta enviando TRACE; `Allow:` na prática só aparece em 405 ou em resposta a OPTIONS, não num 200 típico |
-| `insecure-cookie-flags` | Genuinamente passivo, mas numa API JSON com Bearer token `Set-Cookie` tende a nunca aparecer |
-| `cache-on-authenticated` | Genuinamente passivo e correto — a baseline **é** autenticada (`runScan` passa o `Authenticator` ao `engine.New`) |
+| `cors-misconfigured` | A correct CORS middleware only emits `Access-Control-Allow-Origin` when there is an `Origin` in the request. The baseline sends no `Origin` — passively you only catch the always-on `ACAO: *` case, and origin reflection stays invisible |
+| `dangerous-http-methods` | `TRACE` is only detectable by sending TRACE; `Allow:` in practice only shows up on a 405 or in response to OPTIONS, not on a typical 200 |
+| `insecure-cookie-flags` | Genuinely passive, but on a JSON API with a Bearer token, `Set-Cookie` tends to never appear |
+| `cache-on-authenticated` | Genuinely passive and correct — the baseline **is** authenticated (`runScan` passes the `Authenticator` to `engine.New`) |
 
-Consequência: o bloco de checks de configuração deixa de ser "um arquivo novo
-cada" e passa a depender de uma decisão de coleta. Ver §4.2.
+Consequence: the configuration-checks block stops being "one new file each"
+and starts depending on a collection decision. See §4.2.
 
-### 2.2 Um check só tem uma identidade
+### 2.2 A check only has one identity
 
-`Authenticator.Do` injeta o token em **todo** request, incondicionalmente, e
-fica *abaixo* do rate limiter na cadeia. Um check recebe um `ports.HTTPClient`
-e não tem como mandar um request anônimo, nem como outro usuário.
+`Authenticator.Do` injects the token into **every** request, unconditionally,
+and sits *below* the rate limiter in the chain. A check receives a
+`ports.HTTPClient` and has no way to send an anonymous request, nor one as
+another user.
 
-Isso reposiciona `idor`: ele não é um caso isolado de alta complexidade, é o
-**segundo** consumidor de uma capacidade cujo primeiro consumidor (§2.4) é
-barato e mais valioso. Resolver identidade uma vez atende os dois.
+This repositions `idor`: it is not an isolated high-complexity case, it is the
+**second** consumer of a capability whose first consumer (§2.4) is cheap and
+more valuable. Solving identity once serves both.
 
-### 2.3 `deps` e `rate-limit-bypass` estão fora da régua
+### 2.3 `deps` and `rate-limit-bypass` are outside the yardstick
 
-- **`govulncheck`** lê `go.mod` e o código-fonte: é análise estática, que a
-  régua exclui explicitamente. E consulta o banco de vulnerabilidades pela
-  rede em tempo de execução, então duas rodadas sobre o mesmo código podem
-  divergir. Continua valioso — mas como **passo de CI**, não como subcomando
-  do scanner, e nunca misturado ao `findings.json`.
-- **`rate-limit-bypass`** depende de timing e concorrência do alvo: o
-  resultado não é comparável entre execuções. E "presença de 429 sob rajada"
-  é um teste de carga em miniatura, que a régua também exclui. Se entrar,
-  entra num canal de saída próprio, fora do contrato comparável.
+- **`govulncheck`** reads `go.mod` and the source code: that's static
+  analysis, which the yardstick explicitly excludes. And it queries the
+  vulnerability database over the network at run time, so two runs over the
+  same code can diverge. Still valuable — but as a **CI step**, not a scanner
+  subcommand, and never mixed into `findings.json`.
+- **`rate-limit-bypass`** depends on the target's timing and concurrency: the
+  result isn't comparable across runs. And "429 shows up under burst" is a
+  miniature load test, which the yardstick also excludes. If it comes in, it
+  comes in through its own output channel, outside the comparable contract.
 
-### 2.4 O que faltava: `auth-required`
+### 2.4 What was missing: `auth-required`
 
-Para cada endpoint que o spec declara protegido, mandar o request **sem
-token** e verificar que volta 401/403. Se voltar 200, é A01, critical, prova
-trivial.
+For every endpoint the spec declares protected, send the request **with no
+token** and verify it comes back 401/403. If it comes back 200, that's A01,
+critical, trivial proof.
 
-É o melhor item disponível do roadmap inteiro: determinístico, preto-e-branco,
-sem piso de ruído, não-destrutivo por construção, e **não precisa de segundo
-usuário** — o oráculo é a declaração do próprio spec. `Endpoint.RequiresAuth`
-e `SecurityScheme` já são extraídos por `resolveSecurity` e hoje só servem
-para decidir se vale logar.
+It's the best item in the whole roadmap: deterministic, black-and-white, no
+noise floor, non-destructive by construction, and it **needs no second
+user** — the oracle is the spec's own declaration. `Endpoint.RequiresAuth`
+and `SecurityScheme` are already extracted by `resolveSecurity` and today only
+serve to decide whether logging in is worthwhile.
 
-### 2.5 Sinal antes de volume
+### 2.5 Signal before volume
 
-`missing-headers` numa API que só devolve JSON reporta CSP e X-Frame-Options
-em toda rota. Nenhum dos dois significa nada para uma resposta
-`application/json` que browser nenhum renderiza como documento. É o mesmo modo
-de falha que `exposed-secrets` já evita com o filtro de placeholder: um check
-que as pessoas aprendem a ignorar leva junto os achados reais.
+`missing-headers` on a JSON-only API reports CSP and X-Frame-Options on
+every route. Neither one means anything for an `application/json` response
+that no browser ever renders as a document. It's the same failure mode
+`exposed-secrets` already avoids with its placeholder filter: a check people
+learn to ignore takes the real findings down with it.
 
 ---
 
-## 3. Auditoria do código atual
+## 3. Audit of the current code
 
-Estado geral: build, `vet` e testes verdes; cobertura 82–100% por pacote; CI
-com gofmt/vet/lint/test/race. As invariantes de segurança estão *construídas*,
-não só documentadas — `deniedClient` torna "passivo não toca a rede"
-impossível de violar, `CheckRedirect` fecha o salto de redirect, `runPool`
-preserva ordem de entrada em vez de ordenar depois.
+Overall state: build, `vet` and tests are green; coverage 82–100% per
+package; CI runs gofmt/vet/lint/test/race. The security invariants are
+*built*, not just documented — `deniedClient` makes "passive never touches the
+network" impossible to violate, `CheckRedirect` closes the redirect hop,
+`runPool` preserves input order instead of sorting afterward.
 
-O que segue é o que não está bem.
+What follows is what isn't in good shape.
 
-| # | Sev | Achado | Evidência | Issue |
+| # | Sev | Finding | Evidence | Issue |
 |---|---|---|---|---|
-| 1 | HIGH | Rotas skipped/failed nunca chegam ao relatório | `cmd/scanner/main.go:163,167`; `model/finding.go:44-47`; `report/report.go:105-115` | #12 |
-| 2 | HIGH | "Byte-idêntico" só vale contra alvo estático | `checks/sqli.go:263-266`; `checks/xss.go` (`BaselineResponse`) | #13 |
-| 3 | MEDIUM | Checks ativos limpam rotas POST que nunca exercitaram | `checks/sqli.go:322-356` (body `nil`), `sqli.go:163-171` | #28 |
-| 4 | MEDIUM | Nenhum timeout por request | `adapters/httpclient/httpclient.go:38-39` | #15 |
-| 5 | MEDIUM | ~~Falha de auth vira `failed`, não `skipped`~~ → **corrigido:** falha de auth *parcial* é descartada em silêncio | `checks/sqli.go`, `checks/xss.go`: `lastErr` descartado quando `tested > 0` | #16 |
-| 6 | LOW | `ExtraHeaders` pode sobrescrever `Content-Type`, contra o próprio doc | `core/auth/auth.go:223-226` vs `auth.go:58-63` | #17 |
-| 7 | LOW | `anyFieldSet` ignora `username_field` e `extra_headers` | `adapters/config/config.go:97-105` | #17 |
-| 8 | LOW | `expandTree` engole erro que não seja `MissingVarsError` | `adapters/config/config.go:197-207` | #17 |
-| 9 | LOW | ScopeGuard é comparação exata de string; allowlist por nome | `core/scope/scope.go:37` | #18 |
-| 10 | LOW | Comentários obsoletos que contradizem o código | `checks/xss.go`; `attack/request.go:59-63`; `envexpand.go:4` | #18 |
+| 1 | HIGH | Skipped/failed routes never reach the report | `cmd/scanner/main.go:163,167`; `model/finding.go:44-47`; `report/report.go:105-115` | #12 |
+| 2 | HIGH | "Byte-identical" only holds against a static target | `checks/sqli.go:263-266`; `checks/xss.go` (`BaselineResponse`) | #13 |
+| 3 | MEDIUM | Active checks clear POST routes they never exercised | `checks/sqli.go:322-356` (body `nil`), `sqli.go:163-171` | #28 |
+| 4 | MEDIUM | No per-request timeout | `adapters/httpclient/httpclient.go:38-39` | #15 |
+| 5 | MEDIUM | ~~Auth failure becomes `failed`, not `skipped`~~ → **fixed:** *partial* auth failure is silently dropped | `checks/sqli.go`, `checks/xss.go`: `lastErr` discarded when `tested > 0` | #16 |
+| 6 | LOW | `ExtraHeaders` can overwrite `Content-Type`, contradicting its own doc | `core/auth/auth.go:223-226` vs `auth.go:58-63` | #17 |
+| 7 | LOW | `anyFieldSet` ignores `username_field` and `extra_headers` | `adapters/config/config.go:97-105` | #17 |
+| 8 | LOW | `expandTree` swallows any error that isn't a `MissingVarsError` | `adapters/config/config.go:197-207` | #17 |
+| 9 | LOW | ScopeGuard is an exact string comparison; allowlist by name | `core/scope/scope.go:37` | #18 |
+| 10 | LOW | Stale comments that contradict the code | `checks/xss.go`; `attack/request.go:59-63`; `envexpand.go:4` | #18 |
 
-### 3.1 Detalhe dos dois HIGH
+### 3.1 The two HIGHs in detail
 
-**#1 — cobertura.** O `CLAUDE.md` afirma *"Skipped routes must reach the
+**#1 — coverage.** `CLAUDE.md` states *"Skipped routes must reach the
 report: showing a route as clean when it was never examined is worse than
-admitting it could not be looked at"*, e `engine.Result.Skipped` repete no
-doc comment. Na prática `summarise` devolve `skipped` e `failed`, `runScan`
-escreve só `findings`, e as duas listas viram linhas de stderr descartadas.
-`model.FindingsFile` não tem onde carregá-las.
+admitting it could not be looked at"*, and `engine.Result.Skipped`'s doc
+comment repeats it. In practice `summarise` returns `skipped` and `failed`,
+`runScan` writes only `findings`, and both lists turn into discarded stderr
+lines. `model.FindingsFile` has nowhere to carry them.
 
-Um scan em que o auth quebrou em 90% das rotas produz um `report.html`
-indistinguível de um scan limpo de uma API saudável — só com menos findings.
+A scan where auth broke on 90% of routes produces a `report.html`
+indistinguishable from a clean scan of a healthy API — just with fewer
+findings.
 
-É bloqueante para `scanner diff`: comparar o `findings.json` de ontem com o de
-hoje reportaria `-resolvido` para uma rota que apenas não foi examinada hoje.
-Um verde falso é o pior modo de falha possível para uma guarda de regressão.
+It's blocking for `scanner diff`: comparing yesterday's `findings.json` with
+today's would report `-resolved` for a route that simply wasn't examined
+today. A false green is the worst possible failure mode for a regression
+guard.
 
-**#2 — determinismo.** `sqli.go` embute no `Evidence` três valores medidos ao
-vivo (piso de ruído, `diff` em bytes, trecho do corpo); `xss.go` embute o
-trecho da baseline. Contra um alvo com timestamp, request-id ou contador, dois
-scans idênticos produzem arquivos diferentes.
+**#2 — determinism.** `sqli.go` embeds three live-measured values into
+`Evidence` (noise floor, byte `diff`, response snippet); `xss.go` embeds the
+baseline snippet. Against a target with a timestamp, request id or counter,
+two identical scans produce different files.
 
-`TestScan_IsReproducible` passa porque `newLabServer` serve corpo estático —
-o teste é honesto, mas não cobre a condição que a invariante precisa proteger.
+`TestScan_IsReproducible` passes because `newLabServer` serves a static
+body — the test is honest, but it doesn't cover the condition the invariant
+needs to protect.
 
-**Confirmado empiricamente** (reprodutor em #13): contra um servidor vulnerável
-que carrega um request-id de largura fixa em toda resposta, duas execuções do
-`sqli-boolean` produzem findings com `evidence` diferente — e com **identidade
-idêntica** (`ID`, URL e `payload` iguais). É a confirmação direta da regra de
-§4.3: comparar por identidade funciona, comparar bytes não.
+**Confirmed empirically** (reproducer in #13): against a vulnerable server
+that carries a fixed-width request id in every response, two runs of
+`sqli-boolean` produce findings with different `evidence` — and with
+**identical identity** (same `ID`, URL and `payload`). This directly
+confirms the §4.3 rule: comparing by identity works, comparing bytes doesn't.
 
-O achado 3 também foi confirmado por teste (reprodutor em #28): 15 sondas
-gastas contra uma rota POST que exige body, todas rejeitadas com 400, zero
-alcançando o caminho vulnerável, e `Run` devolvendo `(nil, nil)` — nem finding
-nem skip.
+Finding 3 was also confirmed by test (reproducer in #28): 15 probes spent
+against a POST route that requires a body, all rejected with 400, zero
+reaching the vulnerable path, and `Run` returning `(nil, nil)` — neither a
+finding nor a skip.
 
-### 3.1.1 Correção ao achado 5
+### 3.1.1 Correction to finding 5
 
-O achado 5 foi enunciado errado e a correção fica registrada aqui, porque um
-documento que só guarda a conclusão certa não ensina a desconfiar da errada.
+Finding 5 was stated wrong, and the correction is recorded here, because a
+document that only keeps the right conclusion doesn't teach anyone to
+distrust the wrong one.
 
-**O que eu afirmei:** nenhum check mapeia `auth.ErrReAuthFailed` para
-`model.Skippedf`, logo auth quebrado cai em `Result.Err`.
+**What I claimed:** no check maps `auth.ErrReAuthFailed` to
+`model.Skippedf`, so broken auth falls into `Result.Err`.
 
-**O que a medição mostrou:** falha *total* de auth já vira `Skipped`, por dois
-caminhos que a leitura não seguiu até o fim — `tested == 0` em `sqli`/`xss`, e
-baseline nil quando a coleta falha. `errors.Is(err, model.ErrSkipped)` é
-`true` nos três casos testados. **A invariante 6 estava de pé.**
+**What the measurement showed:** *total* auth failure already becomes
+`Skipped`, through two paths the reading didn't follow all the way —
+`tested == 0` in `sqli`/`xss`, and a nil baseline when collection fails.
+`errors.Is(err, model.ErrSkipped)` is `true` in all three tested cases.
+**Invariant 6 was holding.**
 
-**O defeito real, que só a medição achou:** o caso *parcial*. Com dois
-parâmetros, um servindo e outro com auth quebrado:
+**The real defect, which only the measurement found:** the *partial* case.
+With two parameters, one working and the other with broken auth:
 
 ```
 findings=0  err=<nil>
-requests servidos=18  recusados=6
+requests served=18  rejected=6
 ```
 
-Seis sondas recusadas, e `Run` devolve `(nil, nil)`. `lastErr` é preenchido e
-descartado sempre que `tested > 0`. A rota consta **examinada e limpa** — o
-mesmo modo de falha do achado 3 por outra porta.
+Six probes rejected, and `Run` returns `(nil, nil)`. `lastErr` gets filled
+and then discarded whenever `tested > 0`. The route ends up **examined and
+clean** — the same failure mode as finding 3, through a different door.
 
-A lição de método é a mesma do §3.3: leitura de código gera hipótese, não
-achado. Esta ficou uma etapa inteira no documento com o enunciado invertido.
+The methodological lesson is the same as §3.3: reading code produces a
+hypothesis, not a finding. This one stayed a whole stage in the document with
+its statement inverted.
 
 ---
 
-### 3.2 Limite que o ScopeGuard não cobre
+### 3.2 A limit ScopeGuard does not cover
 
-A allowlist é **por nome de host**, não resolve IP. Não protege contra DNS
-rebinding, e não normaliza caixa nem porta implícita (`LOCALHOST:8080` não
-casa `localhost:8080`). Falha sempre fechado, então não é bypass — mas
-`CLAUDE.md` chama ScopeGuard de *"the hard security boundary"* sem qualificar,
-e um controle descrito como completo quando é parcial é pior que um ausente.
-Correto para o modelo de ameaça ("não escanear a máquina de outro por
-acidente"); o que faltava era dizer isso.
+The allowlist is **by hostname**, and does not resolve IPs. It offers no
+protection against DNS rebinding, and does not normalize case or an implicit
+port (`LOCALHOST:8080` does not match `localhost:8080`). It fails closed
+always, so it isn't a bypass — but `CLAUDE.md` calls ScopeGuard *"the hard
+security boundary"* with no qualifier, and a control described as complete
+when it's partial is worse than one that's simply absent. It's correct for
+the threat model ("don't accidentally scan someone else's machine"); what was
+missing was saying so.
 
-### 3.3 Execução ao vivo contra a `task-api`
+### 3.3 A live run against `task-api`
 
-A auditoria acima é leitura de código. Um scan real, medido com um proxy
-contador entre o scanner e o alvo, mudou a ordem de grandeza do achado 1 e
-revelou três causas que a leitura não pegava.
+The audit above is a reading of the code. A real scan, measured with a
+counting proxy between the scanner and the target, changed the order of
+magnitude of finding 1 and revealed three causes the reading had missed.
 
-Alvo: `task-api` local, 30 endpoints no spec, 22 não-destrutivos, autenticado.
+Target: local `task-api`, 30 endpoints in the spec, 22 non-destructive,
+authenticated.
 
-O instrumento é `tools/reqcount`, um proxy contador que fica entre o scanner
-e o alvo e reporta quantos requests saíram e o que voltou. Ele existe porque
-a saída do próprio scanner não pode dar esse número — a etapa inteira partiu
-da constatação de que ele sub-reportava o que fazia, então medi-lo com ele
-mesmo seria circular:
+The instrument is `tools/reqcount`, a counting proxy that sits between the
+scanner and the target and reports how many requests went out and what came
+back. It exists because the scanner's own output cannot give that number —
+this whole stage started from the observation that it was under-reporting
+what it did, so measuring it with itself would be circular:
 
 ```
 go run ./tools/reqcount -upstream http://localhost:8080 &
-scanner scan --spec openapi.yaml --config config-pelo-proxy.yaml --out findings.json
+scanner scan --spec openapi.yaml --config config-via-proxy.yaml --out findings.json
 kill -TERM %1
 ```
 
-**Custo que isso tem:** rodando pelo proxy, o ScopeGuard passa a validar o
-endereço *do proxy*, não o do alvo. A allowlist continua valendo — nada sai
-para fora dela — mas o que ela garante vira "o scanner só falou com o proxy",
-e o proxy fala com o que `-upstream` mandar. A fronteira que importa se mudou
-para dentro de uma flag. É troca aceitável para uma medição deliberada contra
-o próprio lab, e inaceitável para qualquer outra coisa.
+**The cost of this setup:** run through the proxy, ScopeGuard ends up
+validating the *proxy's* address, not the target's. The allowlist still
+holds — nothing leaves it — but what it guarantees becomes "the scanner only
+talked to the proxy", and the proxy talks to whatever `-upstream` points it
+at. The boundary that matters moved inside a flag. That trade is acceptable
+for a deliberate measurement against your own lab, and unacceptable for
+anything else.
 
 ```
-TOTAL: 278 requests do scanner
+TOTAL: 278 requests from the scanner
 
 GET  -> 200 :  10      <-- 4%
 GET  -> 400 : 136
 GET  -> 404 : 109
 GET  -> 405 :   5
-POST -> 200 :   1      (o login)
+POST -> 200 :   1      (the login)
 POST -> 400 :  17
 ```
 
-Saída do scanner, integral:
+The scanner's own output, in full:
 
 ```
 wrote findings.json (0 findings, 0 skipped, 0 failed)
 ```
 
-**11 de 278 requests obtiveram resposta útil**, e o arquivo diz `0 skipped, 0
+**11 of 278 requests got a useful response**, and the file says `0 skipped, 0
 failed`.
 
-O contraste que torna isso difícil de enxergar sem medir: a `task-api` **é**
-genuinamente bem endurecida — os quatro headers que `missing-headers` procura
-estão presentes em toda resposta, então zero findings é honesto *para aquele
-check*. Um relatório vazio e correto e um relatório vazio por cegueira são,
-hoje, o mesmo arquivo. É exatamente por isso que o achado 1 é o item de maior
-prioridade da etapa.
+The contrast that makes this hard to see without measuring it: `task-api`
+**is** genuinely well hardened — the four headers `missing-headers` looks for
+are present on every response, so zero findings is honest *for that check*.
+An empty-and-correct report and an empty-because-blind report are, today, the
+same file. That's exactly why finding 1 is this stage's top-priority item.
 
-As três causas, cada uma com issue própria:
+The three causes, each with its own issue:
 
-| Causa | Evidência | Issue |
+| Cause | Evidence | Issue |
 |---|---|---|
-| Sonda rejeitada (4xx) lida como resposta válida | `/v1/tasks?status=1` → 400; o **filler benigno** é rejeitado junto com o payload, então `measureNoise` mede o ruído de páginas de erro | #30 |
-| Baseline de rota não-GET é página 405 | `/v1/auth/{logout,register,password}` → 405; passivos julgam a página de erro, e `ProbedMethod` é escrito e nunca lido | #31 |
-| Rotas do spec ausentes no alvo | `/v1/links` → 36 sondas, 36× 404 | #32 |
+| A rejected probe (4xx) is read as a valid response | `/v1/tasks?status=1` → 400; the **benign filler** is rejected right alongside the payload, so `measureNoise` ends up measuring the noise of error pages | #30 |
+| The baseline of a non-GET route is a 405 page | `/v1/auth/{logout,register,password}` → 405; passives judge the error page, and `ProbedMethod` is written and never read | #31 |
+| Spec routes absent from the target | `/v1/links` → 36 probes, 36× 404 | #32 |
 
-A lição de método: **contra uma API bem construída, os checks ativos atuais não
-concluem quase nada — e não dizem isso.** A régua do §1 diz "afirma pouco, com
-precisão"; o que o scanner faz hoje é afirmar pouco sem precisão nenhuma, que é
-outra coisa.
+The methodological lesson: **against a well-built API, today's active checks
+conclude almost nothing — and don't say so.** §1's yardstick says "assert
+little, precisely"; what the scanner does today is assert little with no
+precision at all, which is a different thing.
 
-Nota sobre o achado 2: este scan não o exercita, porque sem nenhum finding não
-há `evidence` para variar entre execuções. Os dois arquivos saem idênticos de
-forma trivial. A confirmação do achado 2 é a de #13, por teste dedicado.
+Note on finding 2: this scan doesn't exercise it, because with no findings at
+all there's no `evidence` to vary between runs. The two files come out
+identical, trivially. Finding 2's confirmation is #13's, via a dedicated
+test.
 
 ---
 
-## 4. Decisões estruturais
+## 4. Structural decisions
 
-Quatro decisões que valem para o projeto todo, não só para a etapa em que cada
-uma é implementada. Cada uma registra a opção **não** tomada: a conclusão
-sozinha é o que um leitor futuro vai questionar, o raciocínio é o que ele
-precisa.
+Four decisions that hold for the whole project, not just the stage each one
+is implemented in. Each records the option **not** taken: the conclusion
+alone is what a future reader will question, the reasoning is what they need.
 
-### 4.1 Cobertura entra no contrato — `schema_version: 2` *(Etapa 1, #12)*
+### 4.1 Coverage enters the contract — `schema_version: 2` *(Stage 1, #12)*
 
-`FindingsFile` ganha um bloco `coverage` ao lado de `findings`:
+`FindingsFile` gains a `coverage` block alongside `findings`:
 
 ```json
 {
@@ -301,213 +312,215 @@ precisa.
 }
 ```
 
-`attack` propaga a cobertura que recebeu e acrescenta a sua; `report` passa a
-mostrar, ao lado do resumo executivo, o que **não** foi examinado.
+`attack` propagates the coverage it received and adds its own; `report` now
+shows, next to the executive summary, what was **not** examined.
 
-**Opção não tomada:** um `coverage.json` separado, deixando o schema em 1. Sai
-mais barato (zero mudança de contrato) mas mantém dois arquivos em sincronia
-manual, e nada impede rodar `report` só com `findings.json` — o que reproduz
-exatamente o verde falso de hoje. O custo do bump é pago uma vez; o do
-arquivo opcional se paga em toda execução futura.
+**Option not taken:** a separate `coverage.json`, leaving the schema at 1.
+Cheaper up front (zero contract change) but keeps two files in manual sync,
+and nothing stops running `report` with only `findings.json` — which
+reproduces exactly today's false green. The bump's cost is paid once; the
+optional file's cost is paid on every future run.
 
-### 4.2 Probe set seguro na coleta *(implementado na Etapa 3, #14)*
+### 4.2 A safe probe set during collection *(implemented in Stage 3, #14)*
 
-`Collect` passa a obter, por endpoint, um conjunto **fixo e pequeno** de
-respostas com métodos seguros:
+`Collect` now obtains, per endpoint, a **fixed and small** set of responses
+using safe methods:
 
-| Probe | Request | Serve a |
+| Probe | Request | Serves |
 |---|---|---|
-| `baseline` | o de hoje, inalterado | tudo que já existe |
-| `options` | OPTIONS na mesma URL | `dangerous-http-methods`, preflight CORS |
-| `origin` | GET com `Origin:` sentinela | `cors-misconfigured` |
+| `baseline` | today's, unchanged | everything that already exists |
+| `options` | OPTIONS on the same URL | `dangerous-http-methods`, CORS preflight |
+| `origin` | GET with a sentinel `Origin:` | `cors-misconfigured` |
 
-`Target.Baseline` permanece **exatamente** como está — invariantes 4 e 5
-intactas — e ganha `Target.Probes` ao lado, com a mesma regra de leitura:
-compartilhado por ponteiro entre checks concorrentes, portanto somente
-leitura.
+`Target.Baseline` stays **exactly** as it is — invariants 4 and 5 intact —
+and gains `Target.Probes` alongside it, with the same reading rule: shared by
+pointer across concurrent checks, therefore read-only.
 
-Custo: 3 requests por endpoint em vez de 1. Em contexto, `sqli-boolean` já
-gasta `3 + 2×len(pairs)` requests **por parâmetro**; +2 por endpoint é ruído
-diante disso. A propriedade que importa se mantém: requests proporcionais ao
-tamanho do spec, não ao spec × número de checks.
+Cost: 3 requests per endpoint instead of 1. In context, `sqli-boolean`
+already spends `3 + 2×len(pairs)` requests **per parameter**; +2 per endpoint
+is noise next to that. The property that matters is preserved: requests
+proportional to the size of the spec, not to the spec × the number of checks.
 
-**Opção não tomada:** cada check ativo manda o seu probe, via `sendProbe`.
-Mais simples e sem mudança arquitetural, mas multiplica requests por check,
-empurra três checks de configuração para `KindActive` sem necessidade, e faz
-`sendProbe` — o caminho de *ataque* — ser usado por coisas que não atacam. A
-escolha por (b) só se justifica porque há **três consumidores concretos hoje**,
-não um hipotético; com um só, a duplicação seria mais barata.
+**Option not taken:** each active check sends its own probe, via
+`sendProbe`. Simpler and requires no architectural change, but multiplies
+requests per check, pushes three configuration checks into `KindActive` with
+no real need, and makes `sendProbe` — the *attack* path — get used by things
+that don't attack. Choosing (b) is only justified because there are **three
+concrete consumers today**, not a hypothetical one; with only one, the
+duplication would be cheaper.
 
-**Não configurável.** O conjunto é fixo no código. Um probe set extensível por
-YAML seria a porta de entrada para requests arbitrários fora do gate
-não-destrutivo.
+**Not configurable.** The set is fixed in code. A YAML-extensible probe set
+would be a door into arbitrary requests outside the non-destructive gate.
 
-### 4.3 Determinismo: identidade separada de evidência *(Etapa 1, #13)*
+### 4.3 Determinism: identity separated from evidence *(Stage 1, #13)*
 
-A invariante 8 passa a ser enunciada em duas partes:
+Invariant 8 is now stated in two parts:
 
-- **Identidade de um finding é determinística.** `ID` deriva só de
-  check + método + path + discriminador, e nunca de nada medido no alvo.
-  É por ela que `scanner diff` compara — nunca por bytes do arquivo.
-- **Evidência é descritiva, não comparável.** Trechos de corpo, piso de ruído
-  e diferenças em bytes são o que o humano lê para julgar o finding; variam
-  com o alvo e isso é esperado.
+- **A finding's identity is deterministic.** `ID` derives only from
+  check + method + path + discriminator, and never from anything measured on
+  the target. It's what `scanner diff` compares by — never file bytes.
+- **Evidence is descriptive, not comparable.** Body snippets, noise floor and
+  byte differences are what a human reads to judge the finding; they vary
+  with the target and that's expected.
 
-O que continua proibido é wall-clock em finding que não seja sobre tempo
-(`Evidence.ResponseTime`), porque isso varia sem que **nada** no alvo tenha
-mudado.
+What stays forbidden is wall-clock time in a finding that isn't about timing
+(`Evidence.ResponseTime`), because that varies even when **nothing** on the
+target changed.
 
-`TestScan_IsReproducible` ganha um par que sirva corpo dinâmico e assegure a
-estabilidade dos **IDs**, não do arquivo inteiro.
+`TestScan_IsReproducible` gains a companion that serves a dynamic body and
+asserts the stability of **IDs**, not of the whole file.
 
-**Consequência para `exposed-secrets`:** seu discriminador é
-`findingDiscriminator(p.name, len(findings))` — índice posicional dentro do
-padrão. Se um de dois achados do mesmo padrão sumir, o ID do remanescente
-muda e o diff reporta "1 removido + 1 novo" para uma remoção só. Precisa de um
-discriminador estável antes do `diff`.
+**Consequence for `exposed-secrets`:** its discriminator is
+`findingDiscriminator(p.name, len(findings))` — a positional index within the
+pattern. If one of two findings from the same pattern disappears, the
+remaining one's ID changes and the diff reports "1 removed + 1 new" for what
+was only one removal. It needs a stable discriminator before `diff`.
 
-### 4.4 Timeout por request *(Etapa 1, #15)*
+### 4.4 Per-request timeout *(Stage 1, #15)*
 
-`httpclient.New` passa a aplicar um timeout por request, configurável em
-`engine.request_timeout` (default modesto). Hoje o único limite é o ctx do run
-inteiro: cinco rotas penduradas prendem os cinco workers até `engine.timeout`
-disparar, e o scan inteiro se perde. Com a coleta triplicando requests, o
-risco triplica junto.
+`httpclient.New` now applies a per-request timeout, configurable via
+`engine.request_timeout` (a modest default). Today the only limit is the
+whole run's ctx: five hung routes tie up all five workers until
+`engine.timeout` fires, and the whole scan is lost. With collection tripling
+requests, the risk triples along with it.
 
 ---
 
-## 5. O princípio que ordena o plano
+## 5. The principle that orders the plan
 
-A execução ao vivo (§3.3) separou os checks em dois grupos com destinos
-diferentes, e essa divisão é o que ordena tudo abaixo:
+The live run (§3.3) split the checks into two groups with different
+destinies, and that split is what orders everything below.
 
-| Oráculo do check | Sobrevive a input validado? | Exemplos |
+| The check's oracle | Survives validated input? | Examples |
 |---|---|---|
-| **Propriedade da resposta** (status, header) | **Sim** — um 400 de validação ainda não é um 401 | `auth-required`, `missing-headers`, `cache-on-authenticated`, `cors` |
-| **Reflexão do payload** | **Não** — a validação rejeita a sonda antes de ela chegar a qualquer query | `sqli-boolean`, `xss-reflected` |
+| **A property of the response** (status, header) | **Yes** — a validation 400 is still not a 401 | `auth-required`, `missing-headers`, `cache-on-authenticated`, `cors` |
+| **Reflection of the payload** | **No** — validation rejects the probe before it ever reaches any query | `sqli-boolean`, `xss-reflected` |
 
-### Medido, não argumentado
+### Measured, not argued
 
-A tabela acima era uma previsão quando foi escrita. Com o `auth-required`
-implementado (#21), ela virou uma medição — mesmo alvo, mesma execução, os
-cinco checks lado a lado:
+The table above was a prediction when it was written. With `auth-required`
+implemented (#21), it became a measurement — same target, same run, five
+checks side by side:
 
-| Check | Oráculo | Vereditos | Skips |
+| Check | Oracle | Verdicts | Skips |
 |---|---|---|---|
 | `auth-required` | status code | **15** | 1 |
-| `exposed-secrets` | corpo já coletado | 13 | 8 |
-| `missing-headers` | headers já coletados | 13 | 8 |
-| `sqli-boolean` | reflexão do payload | **0** | 8 |
-| `xss-reflected` | reflexão do payload | **0** | 8 |
+| `exposed-secrets` | already-collected body | 13 | 8 |
+| `missing-headers` | already-collected headers | 13 | 8 |
+| `sqli-boolean` | payload reflection | **0** | 8 |
+| `xss-reflected` | payload reflection | **0** | 8 |
 
-`auth-required` concluiu sobre **15 de 16** rotas que se aplicavam. Os dois
-checks de injeção concluíram sobre **zero** — recusados pela validação antes
-de alcançarem qualquer coisa, exatamente como o §3.3 previu.
+`auth-required` concluded on **15 of 16** routes it applied to. The two
+injection checks concluded on **zero** — rejected by validation before
+reaching anything, exactly as §3.3 predicted.
 
-E os 15 vereditos não são silêncio: cada um é a afirmação de que uma rota que
-o spec declara protegida **de fato recusa** um request sem credencial,
-verificada mandando um. É o primeiro "limpo" que este scanner já mereceu.
+And the 15 verdicts aren't silence: each one is the assertion that a route
+the spec declares protected genuinely **does refuse** a request with no
+credential, verified by sending one. It's the first "clean" this scanner has
+ever earned.
 
-Um detalhe que custou menos do que eu temia: `POST /v1/auth/logout` e irmãs
-receberam veredito mesmo sem body, porque autenticação roda antes de
-validação — o 401 volta de qualquer jeito. A troca de "não mandar body"
-custou um veredito, não quinze.
+One detail that cost less than I feared: `POST /v1/auth/logout` and its
+siblings got a verdict even with no body, because authentication runs before
+validation — the 401 comes back regardless. Trading away "don't send a body"
+cost one verdict, not fifteen.
 
-Duas consequências que o plano original não tinha como enxergar:
+Two consequences the original plan had no way to see:
 
-1. **`auth-required` é imune ao modo de falha do #30**, então é o primeiro
-   check novo — não um item no meio da fila.
-2. **`sqli`/`xss` não ganham nada com checks novos ao lado.** Precisam de #30 e
-   #28 antes de valerem alguma coisa contra uma API real.
+1. **`auth-required` is immune to #30's failure mode**, so it's the first new
+   check — not an item in the middle of the queue.
+2. **`sqli`/`xss` gain nothing from new checks alongside them.** They need
+   #30 and #28 before they're worth anything against a real API.
 
-E a régua do §1 ganha um corolário que a medição tornou óbvio: *"afirma pouco,
-com precisão"* não é o mesmo que afirmar pouco. Um scan que não conclui e não
-diz que não concluiu afirma pouco **sem** precisão nenhuma.
+And §1's yardstick gains a corollary the measurement made obvious: *"assert
+little, precisely"* is not the same as asserting little. A scan that
+concludes nothing and doesn't say so asserts little **with no** precision at
+all.
 
 ---
 
-## 6. O plano
+## 6. The plan
 
-Cinco etapas. Cada uma tem um critério de saída medível contra o baseline
-levantado em §3.3 — 278 requests, 11 úteis, `0 skipped, 0 failed`.
+Five stages. Each has a measurable exit criterion against the baseline set in
+§3.3 — 278 requests, 11 useful, `0 skipped, 0 failed`.
 
-### Etapa 1 — Honestidade
+### Stage 1 — Honesty
 
-**Propriedade que a etapa compra:** a saída do scan distingue "limpo" de "não
-examinado".
+**Property this stage buys:** the scan's output distinguishes "clean" from
+"not examined".
 
-Nada depois disso vale enquanto ela não estiver de pé: todo relatório, diff e
-gate construído sobre a saída atual herda a mentira por omissão.
+Nothing after this is worth anything until it's in place: every report, diff
+and gate built on today's output inherits the lie of omission.
 
 | Issue | Item |
 |---|---|
-| #12 | Cobertura entra no contrato (`schema_version 2`) |
-| #30 | Sonda rejeitada (4xx) vira `Skipped`, não silêncio |
-| #31 | Baseline 405 por método substituído é declarada |
-| #32 | Rota do spec ausente no alvo vira `Skipped` |
-| #16 | Falha de auth vira `skipped`, não `failed` |
-| #13 | Determinismo: identidade separada de evidência |
-| #15 | Timeout por request |
-| #17 | Três consertos pontuais (achados 6, 7, 8) |
-| #18 | Limites do ScopeGuard + comentários obsoletos |
-| #19 | `.gitignore` do binário + `govulncheck` no CI |
+| #12 | Coverage enters the contract (`schema_version 2`) |
+| #30 | A rejected probe (4xx) becomes `Skipped`, not silence |
+| #31 | A 405 baseline from a substituted method is declared |
+| #32 | A spec route absent from the target becomes `Skipped` |
+| #16 | Auth failure becomes `skipped`, not `failed` |
+| #13 | Determinism: identity separated from evidence |
+| #15 | Per-request timeout |
+| #17 | Three point fixes (findings 6, 7, 8) |
+| #18 | ScopeGuard's limits + stale comments |
+| #19 | Binary in `.gitignore` + `govulncheck` in CI |
 
-**Critério de saída:** rodar o mesmo scan da `task-api` e obter um relatório
-que dê conta das 22 rotas não-destrutivas, uma a uma. Secundário e igualmente
-medível: os 109 requests contra rotas inexistentes vão a zero.
+**Exit criterion:** run the same `task-api` scan and get a report that
+accounts for all 22 non-destructive routes, one by one. Secondary and
+equally measurable: the 109 requests against nonexistent routes go to zero.
 
-### Etapa 2 — Conclusão
+### Stage 2 — Conclusion
 
-**Propriedade:** os checks conseguem chegar a uma conclusão sobre uma API com
-input validado.
+**Property:** checks can reach a conclusion about an API with validated
+input.
 
-| Issue | Item | Por quê aqui |
+| Issue | Item | Why here |
 |---|---|---|
-| #21 | **`auth-required`** | O primeiro check que conclui onde os atuais não conseguem. Oráculo é status code, imune ao #30. Traz junto a identidade alternativa, que #25 depende |
-| #20 | `Content-Type` awareness em `missing-headers` | Sinal antes de volume; corrige ruído do check existente |
-| #28 | Body em rotas POST | Destrava `sqli`/`xss` nas rotas que hoje só parecem limpas |
+| #21 | **`auth-required`** | The first check that concludes where the current ones can't. Its oracle is a status code, immune to #30. It brings the alternate identity #25 depends on |
+| #20 | `Content-Type` awareness in `missing-headers` | Signal before volume; fixes the existing check's noise |
+| #28 | Body on POST routes | Unlocks `sqli`/`xss` on the routes that today only look clean |
 
-**Critério de saída:** o scan da `task-api` produz pelo menos um veredito
-positivo sustentado — "esta rota foi exercitada e está limpa" — em vez de
-silêncio. E a razão de todo `Skipped` restante é uma limitação nomeada, não
-"não sei".
+**Exit criterion:** the `task-api` scan produces at least one sustained
+positive verdict — "this route was exercised and is clean" — instead of
+silence. And the reason for every remaining `Skipped` is a named limitation,
+not "unknown".
 
-### Etapa 3 — Família de configuração
+### Stage 3 — Configuration family
 
-**Propriedade:** o scanner cobre a classe de vulnerabilidade que mais aparece
-em API de produção — configuração.
+**Property:** the scanner covers the vulnerability class most common in
+production APIs — configuration.
 
 | Issue | Item |
 |---|---|
-| #14 | Probe set seguro na coleta (`Target.Probes`) |
+| #14 | A safe probe set during collection (`Target.Probes`) |
 | #22 | `cache-on-authenticated` |
 | #23 | `cors-misconfigured` + `dangerous-http-methods` |
 
-Ordem interna: #14 primeiro, e só porque tem três consumidores concretos
-nesta mesma etapa (§4.2). Construído antes disso seria generalidade
-especulativa.
+Internal order: #14 first, and only because it has three concrete consumers
+in this same stage (§4.2). Building it before that would be speculative
+generality.
 
-**Critério de saída:** os três checks rodam sobre `Target.Probes` sem gastar
-request próprio, e a coleta continua em 3 requests por endpoint.
+**Exit criterion:** all three checks run over `Target.Probes` with no request
+of their own, and collection stays at 3 requests per endpoint.
 
-### Etapa 4 — Continuidade
+### Stage 4 — Continuity
 
-**Propriedade:** o scanner deixa de ser auditoria pontual e vira guarda.
+**Property:** the scanner stops being a one-off audit and becomes a guard.
 
 | Issue | Item |
 |---|---|
 | #24 | `scanner diff` |
-| #29 | Saída SARIF → gate de CI |
+| #29 | SARIF output → CI gate |
 
-**Por que só agora, tendo sido o item 2 do plano original:** um diff sobre a
-saída de hoje compara dois relatórios que não sabem o que não examinaram, e
-reporta `-resolvido` para rota que só não foi olhada. A alavancagem do `diff`
-é real; ela só existe sobre uma base honesta.
+**Why only now, despite being item 2 of the original plan:** a diff over
+today's output compares two reports that don't know what they didn't
+examine, and reports `-resolved` for a route that was simply never looked
+at. `diff`'s leverage is real; it only exists on top of an honest base.
 
-**Critério de saída:** duas execuções contra a `task-api` inalterada produzem
-diff vazio, e desligar uma proteção no alvo produz exatamente uma linha `+`.
+**Exit criterion:** two runs against an unchanged `task-api` produce an empty
+diff, and turning off one protection on the target produces exactly one `+`
+line.
 
-### Etapa 5 — Classes restantes
+### Stage 5 — Remaining classes
 
 | Issue | Item |
 |---|---|
@@ -515,42 +528,44 @@ diff vazio, e desligar uma proteção no alvo produz exatamente uma linha `+`.
 | #26 | `jwt-weak` |
 | #27 | `verbose-errors` + `open-redirect` |
 
-`idor` deixou de ser o degrau final: a identidade alternativa chega na Etapa 2,
-com `auth-required`. Sobra o trabalho de verdade dele — descobrir, de forma
-black-box e determinística, um recurso conhecidamente pertencente a um usuário.
+`idor` stopped being the final step: the alternate identity arrives in
+Stage 2, with `auth-required`. What's left is its real work — discovering,
+black-box and deterministically, a resource known to belong to a specific
+user.
 
-**Fora de etapa:** extrair `pkg/` só quando existir um segundo consumidor real
-— provavelmente quando o gate de CI amadurecer.
+**Out of stage:** extract a `pkg/` only once a second real consumer exists —
+probably once the CI gate matures.
 
 ---
 
-## 6.1 O que mudou em relação ao plano original
+## 6.1 What changed relative to the original plan
 
-| Mudança | Razão |
+| Change | Reason |
 |---|---|
-| Dez issues que não existiam passam à frente de tudo | A auditoria (§3) e a medição (§3.3) acharam defeitos que o plano original não tinha como ver |
-| `scanner diff` cai do 2º lugar para a Etapa 4 | Diff sobre relatório desonesto é verde falso |
-| `auth-required` entra e vira o 1º check novo | Não existia no plano original; é o único que conclui contra API validada |
-| O "bloco passivo" se desfaz | Três dos quatro não eram passivos (§2.1); `insecure-cookie-flags` sai por ser inócuo numa API JSON; `security-txt-missing` sai por ser higiene, não vulnerabilidade |
-| `deps` vira passo de CI (#19) | Análise de fonte + resultado não comparável entre execuções (§2.3) |
-| `rate-limit-bypass` sai do roadmap | Não determinístico e é teste de carga em miniatura (§2.3). Se voltar, em canal de saída próprio |
-| `idor` deixa de ser o último | A identidade alternativa chega com `auth-required` |
+| Ten issues that didn't exist jump ahead of everything | The audit (§3) and the measurement (§3.3) found defects the original plan had no way to see |
+| `scanner diff` drops from 2nd place to Stage 4 | A diff over a dishonest report is a false green |
+| `auth-required` comes in as the 1st new check | It didn't exist in the original plan; it's the only one that concludes against a validated API |
+| The "passive block" dissolves | Three of the four weren't passive (§2.1); `insecure-cookie-flags` is out for being harmless on a JSON API; `security-txt-missing` is out for being hygiene, not a vulnerability |
+| `deps` becomes a CI step (#19) | Source analysis + a result that isn't comparable across runs (§2.3) |
+| `rate-limit-bypass` leaves the roadmap | Non-deterministic and a miniature load test (§2.3). If it returns, it gets its own output channel |
+| `idor` stops being last | The alternate identity arrives with `auth-required` |
 
 ---
 
-## 7. O que fica de fora — e por quê
+## 7. What stays out — and why
 
-- **Teste de carga** (throughput, p99) — não comparável entre execuções, e um
-  modo agressivo contradiz "gentil por design".
-- **SAST / análise de fonte** — o scanner é black-box por decisão. Inclui
-  `govulncheck`, que por isso vira passo de CI (§2.3).
-- **Fuzzing profundo** — briga com gentileza e com comparabilidade.
-- **Qualquer exploração que modifique estado** — o gate não-destrutivo é
-  inegociável. Extração via `UNION SELECT` (só leitura) é o limite, e já é.
-- **Heurística probabilística sem confirmação possível** — viola "só afirmo
-  com prova".
+- **Load testing** (throughput, p99) — not comparable across runs, and an
+  aggressive mode contradicts "gentle by design".
+- **SAST / source analysis** — the scanner is black-box by decision. This
+  includes `govulncheck`, which is why it becomes a CI step (§2.3).
+- **Deep fuzzing** — fights both gentleness and comparability.
+- **Any exploration that modifies state** — the non-destructive gate is
+  non-negotiable. Extraction via `UNION SELECT` (read-only) is the limit, and
+  already is one.
+- **Probabilistic heuristics with no way to confirm** — violates "only assert
+  with proof".
 
-A linha é sempre a mesma: dentro, a vulnerabilidade é propriedade **observável
-de fora** e **provável sem machucar**; fora, exige estado interno, volume, ou
-o código-fonte. O objetivo não é fazer tudo — é responder *uma* pergunta cada
-vez melhor.
+The line is always the same: inside it, a vulnerability is a property
+**observable from outside** and **provable without causing harm**; outside
+it, something requires internal state, volume, or the source code. The goal
+isn't to do everything — it's to answer *one* question, better each time.
