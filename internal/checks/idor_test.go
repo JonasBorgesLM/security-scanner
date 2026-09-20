@@ -177,6 +177,11 @@ func TestIDOR_AppliesOnlyToSafeDetailRoutes(t *testing.T) {
 		// the collection path still holds {uid} — so it is left alone
 		// rather than probed on a literal "{uid}" path.
 		{"GET", "/v1/users/{uid}/posts/{pid}", false},
+		// A root-level detail route has no collection prefix at all — found
+		// live against the task-api's short-link resolver (GET /{code}),
+		// which the check tried to "list" at the bare origin and produced
+		// a confusing "could not list  as the first account" skip.
+		{"GET", "/{code}", false},
 		{"GET", "/tasks", false},
 		{"GET", "/tasks/{id}/attachments", false},
 		{"DELETE", "/tasks/{id}", false},
