@@ -2,10 +2,13 @@ package openapi
 
 import (
 	"reflect"
+	"regexp"
 	"testing"
 
 	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
 )
+
+var uuidShape = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 func endpoint(t *testing.T, endpoints []model.Endpoint, method, path string) model.Endpoint {
 	t.Helper()
@@ -217,4 +220,76 @@ func TestLoad_EndpointOrderIsStable(t *testing.T) {
 			t.Errorf("endpoints[%d] = %q, want %q", i, got, w)
 		}
 	}
+}
+
+// TestLoad_ParameterSample is the extraction half of the fix found running
+// the scanner against the task-api: a strictly-typed parameter (an enum,
+// a uuid path segment) rejects a generic filler exactly as it rejects an
+// injection payload, so an active check never got past validation to test
+// anything. Parameter.Sample is what lets a check reach past that — but
+// only when the spec itself justifies a value; it must never invent one.
+func TestLoad_ParameterSample(t *testing.T) {
+	endpoints, err := Load(t.Context(), "testdata/sample-values.yaml")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	t.Run("parameter-level example wins", func(t *testing.T) {
+		ep := endpoint(t, endpoints, "GET", "/widgets/{id}")
+		got := param(t, ep, "path", "id").Sample
+		want := "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+		if got != want {
+			t.Errorf("Sample = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("falls through to the schema's own example", func(t *testing.T) {
+		ep := endpoint(t, endpoints, "GET", "/gadgets/{key}")
+		got := param(t, ep, "path", "key").Sample
+		if got != "on-the-schema" {
+			t.Errorf("Sample = %q, want %q", got, "on-the-schema")
+		}
+	})
+
+	ep := endpoint(t, endpoints, "GET", "/search")
+
+	t.Run("plain enum: first declared member", func(t *testing.T) {
+		got := param(t, ep, "query", "sort").Sample
+		if got != "relevance" {
+			t.Errorf("Sample = %q, want the first enum member %q", got, "relevance")
+		}
+	})
+
+	t.Run("array of enum: resolved via Items", func(t *testing.T) {
+		got := param(t, ep, "query", "status").Sample
+		if got != "pending" {
+			t.Errorf("Sample = %q, want the first member of the item schema's enum %q", got, "pending")
+		}
+	})
+
+	t.Run("format uuid with nothing else: synthetic placeholder", func(t *testing.T) {
+		got := param(t, ep, "query", "token").Sample
+		if got == "" {
+			t.Fatal("Sample is empty for a format: uuid parameter")
+		}
+		if !uuidShape.MatchString(got) {
+			t.Errorf("Sample = %q is not shaped like a UUID", got)
+		}
+	})
+
+	t.Run("nothing the spec can offer: Sample stays empty", func(t *testing.T) {
+		got := param(t, ep, "query", "q").Sample
+		if got != "" {
+			t.Errorf("Sample = %q, want empty — nothing in the spec justifies a value, and a caller must fall back to its own filler",
+				got)
+		}
+	})
+
+	t.Run("body property enum", func(t *testing.T) {
+		op := endpoint(t, endpoints, "POST", "/reports")
+		got := param(t, op, "body", "format").Sample
+		if got != "pdf" {
+			t.Errorf("Sample = %q, want the first enum member %q", got, "pdf")
+		}
+	})
 }

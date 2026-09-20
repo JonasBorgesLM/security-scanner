@@ -176,7 +176,8 @@ func (c *xssReflected) testParameter(
 	all []model.Parameter,
 	target model.Parameter,
 ) (*model.Finding, error) {
-	baseline, err := sendProbe(ctx, client, "xss", ep, origin, all, target, xssProbeFiller)
+	filler := probeFillerFor(target, xssProbeFiller)
+	baseline, err := sendProbe(ctx, client, "xss", ep, origin, all, target, filler)
 	if err != nil {
 		return nil, fmt.Errorf("fetching baseline for %q: %w", target.Name, err)
 	}
@@ -186,7 +187,7 @@ func (c *xssReflected) testParameter(
 	if rejected(baseline.status) {
 		return nil, notExercisedf(
 			"%q answered %d to the benign value %q, so a marker could not be reflected either",
-			target.Name, baseline.status, xssProbeFiller)
+			target.Name, baseline.status, filler)
 	}
 	baselineBody := string(baseline.body)
 
