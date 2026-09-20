@@ -463,21 +463,18 @@ func runAttack(args []string) error {
 		return fmt.Errorf("attack: run did not finish: %w", err)
 	}
 
-	confirmed, examined, skipped, failed := summariseAttack(outcomes)
+	confirmed, skipped, failed := summariseAttack(outcomes)
 
-	// Carry scan's account forward and add this stage's own. The two are
-	// different questions — "could the scan examine this route?" and "could
-	// the attack reproduce this finding?" — but a report built only on the
-	// second would present a confirmed-nothing run over routes scan never
-	// reached as though the target had simply held up.
-	coverage := in.Coverage
-	coverage.Examined = sortCoverage(append(slices.Clone(coverage.Examined), examined...), examinedKey)
-	coverage.Skipped = sortCoverage(append(slices.Clone(coverage.Skipped), skipped...), unexaminedKey)
-	coverage.Failed = sortCoverage(append(slices.Clone(coverage.Failed), failed...), unexaminedKey)
-
+	// Coverage is carried forward from scan verbatim. It answers "what did
+	// the scan examine?", which attack does not change: attack re-runs
+	// findings, not routes. Its own per-finding outcomes — confirmed, no
+	// PoC, could not reproduce — are reported below and ride on each
+	// Finding's Confirmed flag; folding them into coverage.skipped listed a
+	// route the scan examined (and that produced a finding) under "not
+	// examined" as well, which is a contradiction a reader should never see.
 	out := model.FindingsFile{
 		SchemaVersion: model.SchemaVersion,
-		Coverage:      coverage,
+		Coverage:      in.Coverage,
 		Findings:      allAttacked(outcomes),
 	}
 	if err := writeJSON(*outPath, out); err != nil {
@@ -517,7 +514,11 @@ func readFindings(path string) (model.FindingsFile, error) {
 // attack could not act on — the same transparency principle runScan's
 // summarise applies, in the stage where "no proof of concept exists for
 // this check" is the most common reason of all.
-func summariseAttack(outcomes []attack.Outcome) (confirmed int, examined []model.ExaminedCheck, skipped, failed []model.Unexamined) {
+// summariseAttack counts the stage's own outcomes for the terminal summary.
+// None of this reaches the coverage block: these are per-finding results
+// (was it reproduced?), not per-route coverage (was it examined?), and the
+// report reads the latter from scan's block carried forward.
+func summariseAttack(outcomes []attack.Outcome) (confirmed int, skipped, failed []model.Unexamined) {
 	for _, o := range outcomes {
 		ep := o.Finding.Endpoint
 		switch {
@@ -529,19 +530,11 @@ func summariseAttack(outcomes []attack.Outcome) (confirmed int, examined []model
 			failed = append(failed, model.Unexamined{
 				Check: o.Finding.CheckName, Method: ep.Method, Path: ep.Path, Reason: o.Err.Error(),
 			})
-		default:
-			// A Confirmer ran to completion. It reached a verdict whether or
-			// not the proof of concept reproduced, so it belongs in the same
-			// account as a check that came back clean.
-			examined = append(examined, model.ExaminedCheck{
-				Check: o.Finding.CheckName, Method: ep.Method, Path: ep.Path,
-			})
-			if o.Finding.Confirmed {
-				confirmed++
-			}
+		case o.Finding.Confirmed:
+			confirmed++
 		}
 	}
-	return confirmed, examined, skipped, failed
+	return confirmed, skipped, failed
 }
 
 // allAttacked returns every outcome's Finding, confirmed or not: attack
