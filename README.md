@@ -64,6 +64,13 @@ de uma vez, não um por execução):
 | `engine.timeout` | Deadline global da execução, ex. `5m` |
 | `checks.enabled` | Lista de checks a executar |
 
+Opcionais do `engine`: `burst` (rajada antes da taxa sustentada, default 1),
+`request_timeout` (limite por request, default 30s — sem ele uma rota pendurada
+prende um worker até o deadline global) e `test_creates` (permite que checks
+ativos enviem corpo, o que passa a **criar recursos** em rotas POST; desligado
+por padrão, e separado de `test_destructive` porque criar é recuperável e apagar
+não).
+
 O bloco **`auth` é opcional**: um alvo cujo spec não declara nenhuma rota
 protegida pode ser escaneado sem seção `auth` alguma. Quando presente, ele é
 **tudo-ou-nada** — se qualquer campo de auth aparecer, o conjunto completo é
@@ -79,6 +86,9 @@ vez de escanear as rotas sem autenticação.
 | `auth.credentials.username` / `password` | Credenciais do lab |
 | `auth.credentials.username_field` | Opcional, default `"username"` — chave JSON que carrega `username` no corpo do login (ex. `email`, para um alvo que loga por e-mail) |
 | `auth.token_path` | Caminho em notação de ponto até o token no JSON de resposta |
+| `auth.token_header` / `token_prefix` | Header e prefixo em que o token é injetado (default `Authorization` / `"Bearer "`) |
+| `auth.extra_headers` | Opcional, só no request de login — para um endpoint que exige um header apenas *presente* (defesa CSRF), independente do valor |
+| `auth.secondary_credentials` | Opcional; segundo usuário para o `idor`. Mesmo endpoint e token handling, só as credenciais mudam. Sem ele, o `idor` pula |
 
 ### Variáveis de ambiente
 
@@ -109,35 +119,57 @@ Cada arquivo intermediário é o contrato entre estágios: versionável no git, 
 ```bash
 scanner scan   --spec openapi.yaml --config config.yaml --out findings.json
 scanner attack --in findings.json  --config config.yaml --out confirmed.json
-scanner report --in confirmed.json --out report.html [--json report.json]
+scanner report --in confirmed.json --out report.html [--json report.json] [--sarif report.sarif]
+scanner diff   before.json after.json [--fail-on high]     # exit 2 = piorou
 ```
 
 - **`scan`** — importa as rotas do OpenAPI, autentica no alvo, roda os checks e grava
-  `findings.json` (suspeitas, `confirmed: false`).
+  `findings.json` (suspeitas, `confirmed: false`) com um bloco de cobertura que presta
+  contas de toda rota examinada, pulada ou falha — para que uma lista de findings vazia
+  nunca se confunda com um alvo limpo.
 - **`attack`** — reproduz cada suspeita com uma prova de conceito não-destrutiva e
-  grava `confirmed.json`.
-- **`report`** — lê `confirmed.json` e grava `report.html` + `report.json`: resumo
-  executivo por severidade no topo, e por achado o check, endpoint, categoria OWASP,
-  severidade, evidência (request e response) e uma recomendação de correção.
+  grava `confirmed.json`, carregando a cobertura do scan adiante sem alterá-la.
+- **`report`** — lê `confirmed.json` e grava `report.html` + `report.json`, e com
+  `--sarif`, um SARIF 2.1.0 que o GitHub Code Scanning lê nativamente. Resumo executivo
+  por severidade, por achado o check/endpoint/OWASP/evidência/recomendação, e as tabelas
+  de cobertura (examinado / não examinado).
+- **`diff`** — compara dois arquivos de estágio e reporta `+novo`, `-resolvido`,
+  `? não examinado` e cobertura perdida. Um finding que sumiu só é "resolvido" quando a
+  execução nova de fato chegou a um veredito naquela rota — do contrário some junto com
+  a informação, não com o problema. Sai com código 2 quando algo piora. Ver
+  [`doc/ci-gate.md`](doc/ci-gate.md).
 
 ### Estado atual
 
-O projeto está em construção. Hoje:
+Os três estágios e todos os checks planejados estão implementados. A evolução
+completa — a auditoria que a guiou, as decisões e as cinco etapas — está em
+[`doc/security-scanner-evolucao.md`](doc/security-scanner-evolucao.md).
 
 | Estágio | Estado |
 |---|---|
-| `scan` | **Funcional.** Importa o spec, autentica, coleta uma baseline por endpoint, roda os checks habilitados e grava `findings.json`. |
-| `attack` | **Funcional.** Lê `findings.json`, reproduz cada suspeita não confirmada com uma PoC não-destrutiva e grava `confirmed.json`. |
-| `report` | **Funcional.** Lê `confirmed.json` e grava `report.html` (via `html/template`) + `report.json`. Não toca a rede. |
+| `scan` | Importa o spec, autentica, coleta baseline + probes por endpoint, roda os checks e grava `findings.json` com um bloco de **cobertura**. |
+| `attack` | Lê `findings.json`, reproduz cada suspeita com uma PoC não-destrutiva e grava `confirmed.json`, carregando a cobertura do scan adiante. |
+| `report` | Lê `confirmed.json` e grava `report.html` + `report.json`, e opcionalmente **SARIF** (`--sarif`) para o GitHub Code Scanning. Não toca a rede. |
+| `diff` | Compara dois arquivos de estágio e diz o que mudou; sai com código 2 quando algo piora, para servir de gate de CI. Ver [`doc/ci-gate.md`](doc/ci-gate.md). |
 
-Checks implementados:
+Nove checks, dos quatro com que o projeto começou:
 
-| Check | Tipo | O que reporta |
-|---|---|---|
-| `missing-headers` | passivo | Cabeçalhos de segurança ausentes na resposta: `Content-Security-Policy`, `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options`. Severidade média, OWASP A05. |
-| `exposed-secrets` | passivo | Credenciais no corpo da resposta, inclusive dentro de comentários HTML/JS: chaves de nuvem, tokens de serviço, blocos de chave privada, JWTs e atribuições genéricas (`api_key`, `password`, `Bearer`, connection strings). OWASP A02. |
-| `sqli-boolean` | ativo | SQLi boolean-based em parâmetros de query/path: injeta uma condição sempre-verdadeira e uma sempre-falsa e compara as respostas contra o ruído medido do próprio endpoint. OWASP A03, severidade alta. |
-| `xss-reflected` | ativo | XSS refletido em parâmetros de query/path: pra cada um, pega uma baseline com valor inerte e injeta um marcador único (prefixo/sufixo de `internal/checks/payloads/xss.txt` + sufixo aleatório fresco por probe). Só marca suspeita se o marcador voltar cru na resposta (sem escape de HTML) **e** não estiver presente na baseline — o segundo critério é o que evita falso-positivo. OWASP A03, severidade alta. |
+| Check | Tipo | O que reporta | OWASP |
+|---|---|---|---|
+| `missing-headers` | passivo | Cabeçalhos de segurança ausentes; severidade rebaixada para `low` em resposta que não é documento (JSON), onde CSP/X-Frame não têm o que restringir. | A05 |
+| `exposed-secrets` | passivo | Credenciais no corpo, inclusive em comentários HTML/JS. O valor é **redigido** no relatório; o discriminador do ID é um digest do valor, não a posição. | A02 |
+| `cache-on-authenticated` | passivo | Resposta de rota autenticada que um cache pode guardar (`public`, ou sem `no-store`). Só julga resposta 2xx — página de erro não é a resposta da rota. | A05 |
+| `cors-misconfigured` | passivo¹ | Política de CORS que reflete origem arbitrária. **Ausência de CORS é o estado seguro** — lógica invertida em relação a `missing-headers`. | A05 |
+| `dangerous-http-methods` | ativo | TRACE habilitado, provado por eco. `low`: Cross-Site Tracing não é mais alcançável por browsers; o que resta é divulgação de informação. | A05 |
+| `sqli-boolean` | ativo | SQLi boolean-based: compara a resposta injetada contra o ruído medido do próprio endpoint. | A03 |
+| `xss-reflected` | ativo | XSS refletido: marcador determinístico que só conta se voltar cru **e** não estiver na baseline. | A03 |
+| `auth-required` | ativo | Rota que o spec declara protegida e responde 2xx **sem** credencial. Oráculo é status code, então conclui onde a injeção não consegue. `critical`. | A01 |
+| `idor` | ativo | Recurso de um usuário lido com a sessão de outro. Precisa de `auth.secondary_credentials`; sem elas, pula nomeando a config. | A01 |
+| `jwt-weak` | ativo | `alg:none` aceito (`critical`, com PoC) e `exp` ausente/longo demais (`low`, estrutural). Pula quando o token não é JWT. | A02 |
+| `verbose-errors` | ativo | Input malformado que faz vazar stack trace, SQL cru ou path — ausente da baseline. | A05 |
+| `open-redirect` | ativo | Parâmetro de redirect que aceita host externo. Lê o `Location` do 3xx sem segui-lo (o ScopeGuard bloqueia o salto). | A01 |
+
+¹ Ativo na coleta (um probe com `Origin:` é enviado uma vez por endpoint), passivo no check.
 
 Os padrões de `exposed-secrets` ficam em `internal/checks/patterns/secrets.txt`,
 embutidos via `go:embed` — dá para estender a lista sem tocar na lógica do check.
@@ -234,9 +266,9 @@ wrote findings.json (17 findings, 0 skipped, 0 failed)
 Endpoints que não puderam ser examinados aparecem como `skipped`, com o motivo —
 nunca como "limpos".
 
-Ordem de implementação dos checks: headers ausentes (passivo) → secrets expostos
-(passivo) → SQLi boolean-based (ativo) → XSS refletido (ativo) → IDOR / JWT fraco
-(fase 2). Ver `doc/security-scanner-projeto.md` §7.
+Todos os checks planejados estão implementados (ver a tabela em *Estado atual*).
+A ordem em que foram construídos e o porquê de cada decisão estão em
+`doc/security-scanner-projeto.md` §7 e `doc/security-scanner-evolucao.md` §6.
 
 ---
 

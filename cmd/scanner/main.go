@@ -255,7 +255,14 @@ func runScan(args []string) error {
 // could not examine reads as a clean bill of health it has not earned, so
 // both lists travel into the stage file rather than only onto the terminal.
 func summarise(results []engine.Result) (findings []model.Finding, examined []model.ExaminedCheck, skipped, failed []model.Unexamined) {
+	// All four start non-nil so an empty one serialises as [] rather than
+	// null. The stage file is committed and reviewed by hand; mixing [] for
+	// findings with null for an empty coverage list is the kind of
+	// inconsistency a reviewer trips over.
 	findings = []model.Finding{}
+	examined = []model.ExaminedCheck{}
+	skipped = []model.Unexamined{}
+	failed = []model.Unexamined{}
 	for _, r := range results {
 		// Findings and an admission are not alternatives. A check that
 		// examined three parameters and could not reach a fourth produces
