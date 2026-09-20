@@ -74,13 +74,27 @@ func (c *idor) Metadata() model.CheckMetadata {
 				return false
 			}
 			m := trailingPathParam.FindStringSubmatch(ep.Path)
+			if m == nil {
+				return false
+			}
+			collection := m[1]
 			// The collection path is everything before the trailing /{id}.
-			// If IT still contains a template parameter — a nested detail
-			// route like /users/{uid}/posts/{pid} — there is no single
-			// concrete collection to list, so the check would GET a literal
-			// "{uid}" path and skip on a confusing error. Leave those to a
-			// future version rather than pretend to handle them.
-			return m != nil && !strings.Contains(m[1], "{")
+			// Two shapes have no real collection to list, and both were
+			// found producing a confusing skip against a live target rather
+			// than simply not applying:
+			//
+			//   - It still contains a template parameter — a nested detail
+			//     route like /users/{uid}/posts/{pid} — so the check would
+			//     GET a literal "{uid}" path.
+			//   - It is empty — a root-level detail route like /{code},
+			//     which has no prefix at all. The check would GET the bare
+			//     origin as though it were a listing endpoint, which it
+			//     never is, and report "could not list  as the first
+			//     account" (the blank name is the tell).
+			//
+			// Leave both to a future version rather than pretend to handle
+			// them.
+			return collection != "" && !strings.Contains(collection, "{")
 		},
 	}
 }
