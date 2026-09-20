@@ -1,94 +1,97 @@
-# Security Scanner — Projeto, Arquitetura e Plano de Implementação
+# Security Scanner — Project, Architecture and Implementation Plan
 
-Ferramenta de estudo em Go para descobrir vulnerabilidades, confirmar via ataques controlados e gerar relatório final. Alvo exclusivo: sua própria API de laboratório (ambiente controlado).
-
----
-
-## 1. Escopo e princípios
-
-- **Uso restrito a ambiente próprio/autorizado.** O `ScopeGuard` (allowlist de hosts) é obrigatório e centralizado no cliente HTTP — nenhum request sai sem passar por ele.
-- **Não-destrutivo por padrão.** Só testa métodos seguros (`GET`, `POST` de teste); `DELETE`/`PUT`/`PATCH` exigem opt-in explícito por endpoint.
-- **Gentil por design.** Worker pool + rate limiter evitam self-DoS mesmo contra o próprio lab.
-- **Auditável.** Cada estágio grava JSON versionado. A **identidade** de um finding é determinística — é por ela que dois scans se comparam; a **evidência** é descritiva e se move com o alvo. Saída byte-idêntica vale contra alvo estático apenas (ver `doc/security-scanner-evolucao.md` §4.3).
+A Go study tool for discovering vulnerabilities, confirming them via controlled attacks, and generating a final report. Exclusive target: your own lab API (a controlled environment).
 
 ---
 
-## 2. Fluxo (subcomandos separados)
+## 1. Scope and principles
+
+- **Restricted to your own/authorised environment.** The `ScopeGuard` (host allowlist) is mandatory and centralized in the HTTP client — no request leaves without passing through it.
+- **Non-destructive by default.** Only safe methods are tested (`GET`, test `POST`); `DELETE`/`PUT`/`PATCH` require explicit opt-in per endpoint.
+- **Gentle by design.** A worker pool + rate limiter avoid self-DoS even against your own lab.
+- **Auditable.** Each stage writes versioned JSON. A finding's **identity** is deterministic — it is what two scans are compared by; its **evidence** is descriptive and moves with the target. Byte-identical output only holds against a static target (see `doc/security-scanner-evolucao.md` §4.3).
+
+---
+
+## 2. Flow (separate subcommands)
 
 ```
 scanner scan   --spec openapi.yaml --config config.yaml --out findings.json
 scanner attack --in findings.json  --config config.yaml --out confirmed.json
-scanner report --in confirmed.json --out report.html [--json report.json]
+scanner report --in confirmed.json --out report.html [--json report.json] [--sarif report.sarif]
+scanner diff   before.json after.json [--fail-on high]
 ```
 
-- **scan** — importa rotas do OpenAPI, autentica, roda checks (passivos + suspeitas ativas), grava `findings.json` (`Confirmed: false`). **Feito.**
-- **attack** — reproduz cada suspeita com prova de conceito não-destrutiva, grava `confirmed.json`. **Feito** — `internal/attack`, §7 abaixo.
-- **report** — lê `confirmed.json`, consolida em HTML (`html/template`) + JSON, com resumo executivo por severidade. **Feito** — `internal/report`. Não toca a rede: só lê o arquivo de entrada e renderiza.
+- **scan** — imports routes from the OpenAPI spec, authenticates, runs checks (passive + active suspicions), writes `findings.json` (`Confirmed: false`). **Done.**
+- **attack** — reproduces each suspicion with a non-destructive proof of concept, writes `confirmed.json`. **Done** — `internal/attack`, §7 below.
+- **report** — reads `confirmed.json`, consolidates into HTML (`html/template`) + JSON, plus an optional SARIF file, with an executive summary by severity. **Done** — `internal/report`. Never touches the network: it only reads the input file and renders.
+- **diff** — compares two `findings.json`/`confirmed.json` runs by finding identity, not by file bytes, and exits `2` on a regression. **Done** — `internal/diff`; see `doc/security-scanner-evolucao.md` §4.3 and §6 (Stage 4).
 
-Arquivos intermediários são o contrato entre estágios: versionáveis no git, revisáveis manualmente antes do `attack`, executáveis em máquinas diferentes.
+Intermediate files are the contract between stages: version-controllable in git, manually reviewable before `attack` runs, and runnable on different machines.
 
 ---
 
-## 3. Arquitetura
+## 3. Architecture
 
-**Hexagonal leve** (`ports` / `adapters`) para testar checks sem rede real.
+**Lightweight hexagonal** (`ports` / `adapters`) so checks can be tested without real network traffic.
 
 ```
 security-scanner/
-├── cmd/scanner/main.go            # CLI + composition root: scan | attack | report
+├── cmd/scanner/main.go            # CLI + composition root: scan | attack | report | diff
 ├── internal/
 │   ├── ports/                     # interfaces: HTTPClient
 │   ├── adapters/
-│   │   ├── httpclient/            # cliente real + ScopeGuard middleware
-│   │   ├── openapi/               # parser de spec → []Endpoint
-│   │   └── config/                # leitura + validação do config.yaml
+│   │   ├── httpclient/            # real client + ScopeGuard middleware
+│   │   ├── openapi/               # spec parser → []Endpoint
+│   │   └── config/                # config.yaml reading + validation
 │   ├── core/
 │   │   ├── model/                 # Endpoint, Finding, Evidence, Target, Check
-│   │   ├── engine/                # worker pool + rate limiter + orquestração
-│   │   ├── auth/                  # login automático + re-auth em 401
+│   │   ├── engine/                # worker pool + rate limiter + orchestration
+│   │   ├── auth/                  # automatic login + re-auth on 401
 │   │   └── scope/                 # ScopeGuard
-│   ├── checks/                    # cada check num arquivo, auto-registro via init()
+│   ├── checks/                    # one file per check, self-registering via init()
 │   │   ├── registry.go
-│   │   ├── headers.go             # passivo
-│   │   ├── secrets.go             # passivo
-│   │   ├── patterns/secrets.txt   # regexes de detecção, go:embed
-│   │   ├── sqli.go                # ativo
-│   │   ├── payloads/sqli.txt      # payloads de ataque, go:embed
-│   │   ├── xss.go                 # ativo
-│   │   └── payloads/xss.txt       # templates de marcador, go:embed
-│   ├── attack/                    # confirmers de PoC p/ o estágio attack, mesmo padrão init()
+│   │   ├── headers.go             # passive
+│   │   ├── secrets.go             # passive
+│   │   ├── patterns/secrets.txt   # detection regexes, go:embed
+│   │   ├── sqli.go                # active
+│   │   ├── payloads/sqli.txt      # attack payloads, go:embed
+│   │   ├── xss.go                 # active
+│   │   └── payloads/xss.txt       # marker templates, go:embed
+│   ├── attack/                    # PoC confirmers for the attack stage, same init() pattern
 │   │   ├── attack.go              # Confirmer, Register, Run
-│   │   ├── sqli.go                # sqli-boolean: re-verifica + extrai via UNION
-│   │   └── xss.go                 # xss-reflected: reflexão de marcador fresco
-│   ├── envexpand/                 # expansão de ${VAR} compartilhada
-│   └── report/                    # templates HTML + writer JSON
+│   │   ├── sqli.go                # sqli-boolean: re-verifies + extracts via UNION
+│   │   └── xss.go                 # xss-reflected: fresh-marker reflection
+│   ├── envexpand/                 # shared ${VAR} expansion
+│   ├── diff/                      # finding-identity comparison between two runs
+│   └── report/                    # HTML templates + JSON/SARIF writer
 ├── configs/
-│   └── config.yaml                # exemplo comentado (escopo incluso, sem scope.yaml)
-└── testdata/                      # specs e responses fake p/ testes
+│   └── config.yaml                # commented example (scope included, no scope.yaml)
+└── testdata/                      # fake specs and responses for tests
 ```
 
-**Composition root.** `cmd/scanner` é o único lugar que escolhe adapters concretos.
-Os pacotes de `core/` recebem um `ports.HTTPClient` e, por construção, não podem
-verificar qual implementação chegou — então a garantia de que todo mundo recebeu o
-cliente com `ScopeGuard` mora ali, e só ali. Entregar um `*http.Client` cru a
-qualquer componente desligaria a fronteira de segurança sem quebrar compilação nem
-teste.
+**Composition root.** `cmd/scanner` is the only place that chooses concrete adapters.
+Packages under `core/` receive a `ports.HTTPClient` and, by construction, cannot
+verify which implementation they got — so the guarantee that everyone received the
+client with `ScopeGuard` lives there, and only there. Handing a raw `*http.Client` to
+any component would turn off the security boundary without breaking either a build or
+a test.
 
-### Decisões-chave (validadas)
+### Key decisions (validated)
 
-| Decisão | Escolha | Motivo |
+| Decision | Choice | Reason |
 |---|---|---|
-| Organização | Hexagonal leve | Testabilidade determinística sem rede |
-| Concorrência | Worker pool + `x/time/rate` | Evita self-DoS; padrão de scanners reais |
-| Extensibilidade | Registry via `init()` + metadados | Idiomático (como `database/sql` drivers) |
-| Estágios | Arquivos JSON versionados (`schema_version`) | Auditoria e composição estilo Unix |
-| Segurança | `ScopeGuard` como middleware central | Segurança por design, não por convenção |
-| Storage | JSON em disco | YAGNI — sem DB por enquanto |
-| Payloads | `go:embed` de arquivos | Estende sem recompilar a lógica |
+| Organisation | Lightweight hexagonal | Deterministic testability without a network |
+| Concurrency | Worker pool + `x/time/rate` | Avoids self-DoS; the pattern real scanners use |
+| Extensibility | Registry via `init()` + metadata | Idiomatic (like `database/sql` drivers) |
+| Stages | Versioned JSON files (`schema_version`) | Auditability and Unix-style composition |
+| Security | `ScopeGuard` as a central middleware | Security by design, not by convention |
+| Storage | JSON on disk | YAGNI — no DB for now |
+| Payloads | `go:embed` of files | Extends without recompiling the logic |
 
 ---
 
-## 4. Modelo de dados
+## 4. Data model
 
 ```go
 type Endpoint struct {
@@ -97,7 +100,7 @@ type Endpoint struct {
     Parameters     []Parameter
     RequiresAuth   bool
     SecurityScheme string
-    Destructive    bool   // DELETE/PUT/PATCH → pulado sem opt-in
+    Destructive    bool   // DELETE/PUT/PATCH → skipped without opt-in
 }
 
 type CheckMetadata struct {
@@ -109,20 +112,20 @@ type CheckMetadata struct {
     AppliesTo     func(Endpoint) bool
 }
 
-// Response é a resposta capturada na coleta inicial, lida inteira em
-// memória para que vários checks inspecionem a mesma sem refazer o request.
+// Response is the response captured during initial collection, read fully into
+// memory so several checks can inspect the same one without redoing the request.
 type Response struct {
-    URL          string      // origem da baseline (scheme/host p/ checks ativos)
+    URL          string      // baseline origin (scheme/host for active checks)
     StatusCode   int
     Headers      http.Header
     Body         []byte
-    ProbedMethod string      // método realmente usado (GET substitui métodos inseguros)
+    ProbedMethod string      // the method actually used (GET replaces unsafe methods)
 }
 
-// Target é para onde o check aponta: o endpoint mais a baseline coletada.
+// Target is what a check points at: the endpoint plus its collected baseline.
 type Target struct {
     Endpoint    Endpoint
-    Baseline    *Response   // nil se a coleta falhou
+    Baseline    *Response   // nil if collection failed
     BaselineErr error
 }
 
@@ -137,36 +140,36 @@ type Finding struct {
     Endpoint      Endpoint
     Severity      string
     OWASPCategory string
-    Request       CapturedRequest   // request COMPLETO p/ o attack reproduzir
+    Request       CapturedRequest   // the FULL request, so attack can reproduce it
     Evidence      Evidence
     Confirmed     bool
 }
 
-// Unexamined é o oposto de um Finding: a ausência de informação sobre uma
-// rota. Deliberadamente um tipo separado — misturá-lo entre os findings
-// faria "olhei e não achei" e "não consegui olhar" voltarem a ter a mesma
-// forma, que é exatamente o que ele existe para impedir.
+// Unexamined is the opposite of a Finding: the absence of information about a
+// route. Deliberately a separate type — mixing it in among findings would make
+// "I looked and found nothing" and "I could not look" collapse back into the
+// same shape, which is exactly what it exists to prevent.
 type Unexamined struct {
-    Check  string   // vazio quando a decisão precede qualquer check
+    Check  string   // empty when the decision precedes any check
     Method string
     Path   string
     Reason string
 }
 
-// ExaminedCheck é um check que rodou contra uma rota e chegou a um
-// veredito — tenha ele produzido finding ou não. Não carrega razão, e é
-// essa a diferença inteira para Unexamined: uma lacuna tem que se
-// explicar, um check concluído não tem o que explicar.
+// ExaminedCheck is a check that ran against a route and reached a verdict —
+// whether or not it produced a finding. It carries no reason, and that is the
+// whole difference from Unexamined: a gap has to explain itself, a completed
+// check has nothing to explain.
 type ExaminedCheck struct {
     Check  string
     Method string
     Path   string
 }
 
-// Coverage presta contas do que o estágio de fato conseguiu examinar.
-// Sem ele, um scan que não alcançou nada e um scan de alvo limpo produzem
-// o mesmo arquivo — uma lista de findings vazia — e toda decisão a jusante
-// erra na mesma direção.
+// Coverage accounts for what the stage actually managed to examine.
+// Without it, a scan that reached nothing and a scan of a clean target
+// produce the same file — an empty findings list — and every downstream
+// decision errs the same way.
 type Coverage struct {
     EndpointsTotal int
     ChecksRun      int
@@ -175,18 +178,18 @@ type Coverage struct {
     Failed         []Unexamined
 }
 
-// As três listas fecham:
-//   len(Examined) + entradas de nível check em Skipped + len(Failed) == ChecksRun
-// Skipped guarda também entradas de nível endpoint (rota destrutiva, rota
-// ausente do alvo), decididas antes de qualquer check ser agendado — elas
-// não são check-runs, e ficam de fora da soma por não terem nome de check.
+// The three lists reconcile:
+//   len(Examined) + check-level entries in Skipped + len(Failed) == ChecksRun
+// Skipped also holds endpoint-level entries (a destructive route, a route
+// absent from the target), decided before any check was scheduled — those
+// are not check-runs, and are excluded from the sum because they carry no
+// check name.
 
-// FindingsFile é o contrato em disco de scan e attack. Coverage viaja
-// junto dos findings, não num arquivo ao lado, para que os dois não possam
-// divergir e nenhum estágio receba findings sem a prestação de contas do
-// que os produziu.
+// FindingsFile is the on-disk contract of scan and attack. Coverage travels
+// alongside findings, not in a sibling file, so the two cannot diverge and no
+// stage receives findings without the accounting of what produced them.
 type FindingsFile struct {
-    SchemaVersion int        // 3 — v1 não tinha Coverage, v2 não tinha Examined; ambas recusadas
+    SchemaVersion int        // 3 — v1 had no Coverage, v2 had no Examined; both refused
     Coverage      Coverage
     Findings      []Finding
 }
@@ -201,7 +204,7 @@ type CapturedRequest struct {
 }
 
 type Evidence struct {
-    BaselineResponse string        // resposta "limpa" p/ comparar (anti-falso-positivo)
+    BaselineResponse string        // the "clean" response to compare against (anti-false-positive)
     ResponseSnippet  string
     ResponseTime     time.Duration
     StatusCode       int
@@ -210,24 +213,24 @@ type Evidence struct {
 
 ---
 
-## 5. Correções incorporadas no planejamento
+## 5. Corrections folded into the plan
 
-1. **Payloads em `go:embed`** — não hardcoded; estende sem tocar na lógica.
-2. **`Kind` passive/active** — engine não gasta request em check passivo; ele recebe a resposta da coleta inicial e um cliente que recusa requests.
-3. **`CapturedRequest` completo no Finding** — `attack` consegue reproduzir a suspeita.
-4. **Baseline anti-falso-positivo** — repete request limpo p/ medir ruído (timestamp, CSRF token) antes de comparar em SQLi boolean-based.
-5. **Flag `Destructive`** — métodos destrutivos pulados por padrão; opt-in explícito.
-6. **Segredos via env** — `config.yaml` suporta `${LAB_PASSWORD}` p/ não commitar credencial.
-7. **Context + timeout global + graceful shutdown** — `--timeout` e `Ctrl+C` cancelam o pool limpo.
-8. **Re-auth em 401** — re-loga uma vez antes de marcar falha; rotas com login falho viram "skipped", nunca "vulnerável".
+1. **Payloads via `go:embed`** — not hardcoded; extends without touching logic.
+2. **`Kind` passive/active** — the engine never spends a request on a passive check; it receives the initial collection's response plus a client that refuses requests.
+3. **Full `CapturedRequest` on the Finding** — `attack` can reproduce the suspicion.
+4. **Anti-false-positive baseline** — repeats a clean request to measure noise (timestamp, CSRF token) before comparing, in boolean-based SQLi.
+5. **`Destructive` flag** — destructive methods skipped by default; explicit opt-in.
+6. **Secrets via env** — `config.yaml` supports `${LAB_PASSWORD}` so credentials never get committed.
+7. **Context + global timeout + graceful shutdown** — `--timeout` and `Ctrl+C` cleanly cancel the pool.
+8. **Re-auth on 401** — re-logs in once before marking a failure; routes with a failed login become "skipped", never "vulnerable".
 
 ---
 
 ## 6. Config
 
-Formato implementado em `internal/adapters/config`. O arquivo de exemplo comentado
-vive em `configs/config.yaml` — **não existe `scope.yaml` separado**, o escopo é a
-seção `scope:` deste mesmo arquivo.
+Format implemented in `internal/adapters/config`. The commented example file
+lives at `configs/config.yaml` — **there is no separate `scope.yaml`**; scope is the
+`scope:` section of this same file.
 
 ```yaml
 schema_version: 1
@@ -237,13 +240,13 @@ scope:
   allowed_hosts: ["localhost:8080", "127.0.0.1:8080"]
 auth:
   login_endpoint: /login
-  method: POST                    # opcional, default POST
+  method: POST                    # optional, defaults to POST
   credentials:
     username: admin
     password: ${LAB_PASSWORD}     # via env
-    username_field: email         # opcional, default "username" — chave JSON do login body
+    username_field: email         # optional, defaults to "username" — the login body's JSON key
   token_path: data.access_token
-  token_header: Authorization     # opcional, default Authorization
+  token_header: Authorization     # optional, defaults to Authorization
   token_prefix: "Bearer "
 engine:
   max_concurrency: 5
@@ -254,300 +257,301 @@ checks:
   enabled: [missing-headers, exposed-secrets, sqli-boolean, xss-reflected]
 ```
 
-### Regras de validação
+### Validation rules
 
-`config.Load` acumula **todos** os problemas e falha uma vez só, listando cada um —
-quem está corrigindo o arquivo vê a lista inteira em vez de descobrir um erro por
-execução.
+`config.Load` accumulates **every** problem and fails once, listing each one —
+whoever is fixing the file sees the whole list instead of discovering one error per
+run.
 
-| Regra | Motivo |
+| Rule | Reason |
 |---|---|
-| `schema_version` precisa ser exatamente `1` | Mudança futura de formato falha alto, não é lida errado em silêncio |
+| `schema_version` must be exactly `1` | A future format change fails loudly instead of being silently misread |
 
-> **Nota (v2/v3).** O `schema_version` dos arquivos de estágio (`findings.json`,
-> `confirmed.json`) subiu para `2` com o bloco `coverage`, e para `3` com a
-> lista `examined`. Um arquivo v1 é
-> **recusado**, não lido com cobertura vazia: um arquivo escrito antes de o
-> scanner saber prestar contas do que falhou em examinar é indistinguível de
-> um em que nada falhou, e lê-lo como o segundo reintroduz em silêncio a
-> confusão que o bloco existe para encerrar. O `schema_version: 1` do
-> `config.yaml` é outro número, e não mudou.
-| `target.base_url` precisa ser URL absoluta | Sem host não há o que checar contra a allowlist |
-| `scope.allowed_hosts` não pode ser vazia, sem entradas em branco | É a fronteira de segurança |
-| **host do `target.base_url` ∈ `scope.allowed_hosts`** | Config incoerente faria o `ScopeGuard` bloquear o próprio alvo; falha na largada em vez de a cada request |
-| bloco `auth` **opcional, tudo-ou-nada**: ausente é válido; se qualquer campo for setado, `login_endpoint`, `token_path`, `credentials.username` e `credentials.password` passam a ser obrigatórios | Um alvo público não precisa de credenciais; mas um bloco pela metade quase sempre é erro (chave errada, campo esquecido) |
-| `engine.max_concurrency`, `requests_per_second`, `timeout` > 0 | Zero desligaria pool ou rate limiter |
-| `checks.enabled` não pode ser vazia | Um scan sem checks é ruído |
+> **Note (v2/v3).** The `schema_version` of the stage files (`findings.json`,
+> `confirmed.json`) went up to `2` with the `coverage` block, and to `3` with the
+> `examined` list. A v1 file is
+> **refused**, not read with an empty coverage: a file written before the
+> scanner knew how to account for what it failed to examine is
+> indistinguishable from one where nothing failed, and reading it as the
+> latter silently reintroduces the exact confusion that block exists to end. The
+> `config.yaml`'s `schema_version: 1` is a different number, and has not changed.
+| `target.base_url` must be an absolute URL | With no host there is nothing to check against the allowlist |
+| `scope.allowed_hosts` cannot be empty, and no entry can be blank | It is the security boundary |
+| **the `target.base_url` host ∈ `scope.allowed_hosts`** | An incoherent config would make `ScopeGuard` block the target itself; fail at startup instead of on every request |
+| the `auth` block is **optional, all-or-nothing**: absent is valid; if any field is set, `login_endpoint`, `token_path`, `credentials.username` and `credentials.password` become required | A public target needs no credentials; but a half-filled block is almost always a mistake (wrong key, forgotten field) |
+| `engine.max_concurrency`, `requests_per_second`, `timeout` > 0 | Zero would turn off the pool or the rate limiter |
+| `checks.enabled` cannot be empty | A scan with no checks is noise |
 
-`auth.method` e `auth.token_header` são opcionais (default `POST` e `Authorization`).
+`auth.method` and `auth.token_header` are optional (default `POST` and `Authorization`).
 
-Se o config **valida** (bloco `auth` ausente é válido), ainda resta a pergunta que só
-o spec responde: o alvo *precisa* de auth? Essa checagem cruzada mora no
-`cmd/scanner` (`runScan`/`runAttack`), não no `config`: o `Authenticator` só é
-construído quando há endpoint com `RequiresAuth`, e se houver rota protegida sem bloco
-`auth` configurado, a etapa falha com mensagem clara em vez de escanear a rota sem
-autenticação.
+If the config **validates** (an absent `auth` block is valid), the question only the
+spec can answer remains: does the target *need* auth? That cross-check lives in
+`cmd/scanner` (`runScan`/`runAttack`), not in `config`: the `Authenticator` is only
+built when there is an endpoint with `RequiresAuth`, and if a protected route exists
+with no `auth` block configured, the stage fails with a clear message instead of
+scanning the route without authentication.
 
-### Expansão de `${VAR}`
+### `${VAR}` expansion
 
-Feita sobre os **valores escalares do YAML já parseado**, nunca sobre o texto cru —
-assim um `${LAB_PASSWORD}` citado num comentário explicativo continua sendo
-documentação, não uma referência a resolver. Variável não definida aborta com o nome
-dela na mensagem (`envexpand.MissingVarsError` traz a lista completa, acessível via
-`errors.As`), em vez de mandar o literal `${VAR}` como credencial para o alvo.
+Performed on the **already-parsed YAML's scalar values**, never on raw text —
+so a `${LAB_PASSWORD}` quoted inside an explanatory comment stays documentation,
+not a reference to resolve. An undefined variable aborts with its name in the
+message (`envexpand.MissingVarsError` carries the full list, retrievable via
+`errors.As`), instead of sending the literal `${VAR}` to the target as a credential.
 
-### Registry de checks
+### Check registry
 
-Implementado em `internal/checks/registry.go`, no padrão dos drivers de
-`database/sql`: cada check se auto-registra num `init()`, então adicionar um check é
-adicionar um arquivo — não há lista central para manter em sincronia.
+Implemented in `internal/checks/registry.go`, following the `database/sql`
+driver pattern: each check self-registers in an `init()`, so adding a check means
+adding a file — there is no central list to keep in sync.
 
-- **`RegisterCheck(c)`** entra em pânico com check nil, nome vazio, `Kind`
-  desconhecido ou nome duplicado. Todos são erros de programação em código próprio,
-  detectáveis no instante em que o binário sobe — devolver `error` de dentro de um
-  `init()` não daria a ninguém como tratar.
-- **`Enabled(names)`** resolve o `checks.enabled` do config. Nome desconhecido é
-  **erro**, listando os disponíveis — um typo no `config.yaml` desabilitaria um check
-  em silêncio e produziria um relatório limpinho que simplesmente nunca o executou.
-- **`All()` / `Names()`** devolvem em ordem de nome.
+- **`RegisterCheck(c)`** panics on a nil check, an empty name, an unknown `Kind`
+  or a duplicate name. All of these are programming errors in our own code,
+  detectable the instant the binary starts — returning an `error` from inside an
+  `init()` would give no one a way to handle it.
+- **`Enabled(names)`** resolves `checks.enabled` from the config. An unknown name is
+  an **error**, listing the available ones — a typo in `config.yaml` would otherwise
+  silently disable a check and produce a clean-looking report that simply never ran it.
+- **`All()` / `Names()`** return in name order.
 
-O engine **não** importa o registry: recebe `[]model.Check` já resolvido. Isso mantém
-o engine testável sem estado global e preserva a direção das dependências
-(`core/` não depende de `checks/`). Quem costura os dois é o composition root.
+The engine **does not** import the registry: it receives an already-resolved
+`[]model.Check`. This keeps the engine testable without global state and preserves
+the direction of dependencies (`core/` does not depend on `checks/`). The
+composition root is what stitches the two together.
 
-### Contrato do engine
+### Engine contract
 
-Implementado em `internal/core/engine`:
+Implemented in `internal/core/engine`:
 
-- **`Collect(ctx, endpoints)`** — a *coleta inicial*: um request por endpoint,
-  paralelizado no pool e limitado pelo rate limiter, produzindo `[]Target` com a
-  baseline de cada um. **Só envia método seguro** (GET/HEAD/OPTIONS): endpoint
-  declarado como POST/PUT/PATCH/DELETE é sondado com GET, e a substituição fica
-  registrada em `Response.ProbedMethod`. Uma fase chamada "coleta" não pode criar
-  nem destruir nada no alvo, e os headers que os checks passivos olham são
-  propriedade da rota, não do verbo. Parâmetros de path (`{id}`) são preenchidos com
-  um placeholder; 404, 405 ou 400 continuam sendo baseline válida. Endpoint
-  destrutivo **não é coletado** sem opt-in, então não custa request algum. Coleta
-  que falha ainda devolve um `Target`, com `BaselineErr` no lugar da resposta.
-  Cancelamento devolve o que já foi coletado **mais um erro** — o chamador não pode
-  confundir coleta truncada com coleta completa.
-- **`BuildJobs(targets, checks)`** — cruza cada target com os checks aplicáveis, e
-  reaplica a regra não-destrutiva (invariante de segurança garantida num lugar só é
-  uma refatoração de distância de não ser garantida em lugar nenhum). Dois filtros:
-  `AppliesTo`, e `CheckMetadata.RequiresAuth` — um check que só faz sentido com
-  sessão (IDOR e afins) não é pareado com rota pública. Checks são pareados em ordem
-  de nome, então a lista de jobs não depende da ordem em que o registry entregou.
-- **`Run(ctx, jobs)`** — worker pool de `max_concurrency` workers consumindo de um
-  channel. Devolve os resultados em ordem dos jobs, independente de qual worker
-  terminou primeiro.
-- **Rate limiter como decorator de `ports.HTTPClient`**, não como portão por job.
-  A cobrança é por *request*: check passivo que não faz request nenhum não gasta
-  budget; check ativo que faz três é cobrado três vezes. Um único limiter é
-  compartilhado por todos os workers, então concorrência não multiplica a taxa.
-- **Check passivo recebe um cliente que recusa todo request** (`ErrPassiveCheckRequest`).
-  "Passivo não toca a rede" passa a valer por construção, não por confiança em cada
-  check. É isso que mantém o número de requests proporcional ao tamanho do spec, e
-  não ao spec vezes o número de checks habilitados.
-- **Shutdown gracioso** — cancelar o `ctx` (timeout global ou Ctrl+C) para o
-  despacho de novos jobs, deixa os workers terminarem o que já pegaram, e devolve
-  os resultados parciais junto com `ctx.Err()`. O `ctx` também chega aos checks,
-  para que um request em voo se desenrole em vez de prender o shutdown atrás de
-  uma conexão pendurada.
-- **Check que entra em pânico vira erro no `Result`**, não derruba o scan inteiro —
-  perder dez minutos de varredura por um bug num check seria pior do que reportá-lo.
-  Pânico fora de um check (na coleta, digamos) é contido pelo pool: aquele item some
-  do resultado e a fase se reporta incompleta.
-- **`Run` carimba o que já sabe em cada `Finding`**: `Endpoint`, `CheckName`,
-  `Severity`, `OWASPCategory` e um `ID` determinístico. Assim nenhum check repete
-  metadado que já declarou — e nenhum pode esquecer o `Endpoint`, que é justamente o
-  que o estágio `attack` precisa para reproduzir.
-- **Check que não consegue concluir devolve `model.Skippedf(...)`** e vira
-  `Result.Skipped` com o motivo, nunca finding e nunca erro. Rota mostrada como limpa
-  sem ter sido examinada é pior que rota assumidamente não examinada.
-- Erro de um check é registrado no `Result.Err` daquele job; `Run` só devolve erro
-  quando algum job ficou sem rodar.
+- **`Collect(ctx, endpoints)`** — the *initial collection*: one request per
+  endpoint, parallelised across the pool and bounded by the rate limiter, producing
+  `[]Target` with each one's baseline. **Only sends a safe method** (GET/HEAD/OPTIONS):
+  an endpoint declared as POST/PUT/PATCH/DELETE is probed with GET, and the
+  substitution is recorded in `Response.ProbedMethod`. A phase called "collection"
+  cannot create or destroy anything on the target, and the headers passive checks
+  look at belong to the route, not the verb. Path parameters (`{id}`) are filled with
+  a placeholder; 404, 405 or 400 are still a valid baseline. A destructive endpoint
+  **is not collected** without opt-in, so it costs no request at all. A collection
+  that fails still returns a `Target`, with `BaselineErr` in place of the response.
+  Cancellation returns whatever was already collected **plus an error** — the caller
+  cannot mistake a truncated collection for a complete one.
+- **`BuildJobs(targets, checks)`** — crosses each target with its applicable checks,
+  and reapplies the non-destructive rule (a security invariant guaranteed in exactly
+  one place is one refactor away from being guaranteed nowhere). Two filters:
+  `AppliesTo`, and `CheckMetadata.RequiresAuth` — a check that only makes sense with a
+  session (IDOR and the like) is never paired with a public route. Checks are paired
+  in name order, so the job list does not depend on the order the registry handed
+  them over in.
+- **`Run(ctx, jobs)`** — a worker pool of `max_concurrency` workers consuming from a
+  channel. Returns results in job order, regardless of which worker finished first.
+- **Rate limiter as a decorator of `ports.HTTPClient`**, not as a gate per job.
+  Charging happens per *request*: a passive check that makes no request spends no
+  budget; an active check that makes three is charged three times. A single limiter
+  is shared by all workers, so concurrency never multiplies the rate.
+- **A passive check receives a client that refuses every request**
+  (`ErrPassiveCheckRequest`). "Passive never touches the network" holds by
+  construction, not by trusting each check. This is what keeps request count
+  proportional to the size of the spec, not to the spec times the number of enabled
+  checks.
+- **Graceful shutdown** — cancelling the `ctx` (global timeout or Ctrl+C) stops the
+  dispatch of new jobs, lets the workers finish what they already picked up, and
+  returns the partial results together with `ctx.Err()`. The `ctx` also reaches the
+  checks, so a request in flight unwinds instead of holding up shutdown behind a
+  hung connection.
+- **A panicking check becomes an error on the `Result`**, not a crash of the whole
+  scan — losing ten minutes of scanning to a bug in one check would be worse than
+  reporting it. A panic outside a check (during collection, say) is contained by the
+  pool: that item disappears from the result and the phase reports itself incomplete.
+- **`Run` stamps what it already knows onto each `Finding`**: `Endpoint`,
+  `CheckName`, `Severity`, `OWASPCategory` and a deterministic `ID`. This way no
+  check repeats metadata it already declared — and none can forget the `Endpoint`,
+  which is exactly what the `attack` stage needs to reproduce it.
+- **A check that cannot conclude returns `model.Skippedf(...)`** and becomes a
+  `Result.Skipped` with the reason, never a finding and never an error. A route shown
+  as clean without having been examined is worse than a route admittedly not
+  examined.
+- A check's error is recorded on that job's `Result.Err`; `Run` only returns an
+  error when some job failed to run at all.
 
-O login/re-auth do `Authenticator` fica *abaixo* do limiter e portanto não é
-limitado por ele — decisão consciente: logins são raros e já colapsados num único
-in-flight pelo próprio `Authenticator`.
+The `Authenticator`'s login/re-auth sits *below* the limiter and is therefore not
+rate-limited by it — a deliberate decision: logins are rare and already collapsed
+into a single in-flight one by the `Authenticator` itself.
 
-### Contrato de autenticação
+### Authentication contract
 
-Implementado em `internal/core/auth`:
+Implemented in `internal/core/auth`:
 
-- Login no `login_endpoint`, token extraído por `token_path` (notação de ponto sobre
-  objetos JSON; sem indexação de array) e injetado em `token_header` com `token_prefix`.
-- **Re-auth em 401, exatamente uma vez.** Se o retry ainda devolver 401, a resposta
-  401 é repassada como resposta válida — cabe à camada de checks marcar a rota como
-  `skipped`, nunca como "vulnerável".
-- Se o próprio re-login falhar, o erro envolve `auth.ErrReAuthFailed` (testável com
-  `errors.Is`), distinguindo "auth quebrada" de "rota realmente não autorizada".
-- 401s concorrentes do worker pool colapsam num **único** re-login (contador de
-  geração + mutex), em vez de um login por request em voo.
-- Requests com corpo precisam ser reexecutáveis (`GetBody`), senão o retry pós-re-auth
-  é rejeitado com erro explícito em vez de reenviar corpo vazio.
+- Login against `login_endpoint`, token extracted by `token_path` (dot notation over
+  JSON objects; no array indexing) and injected into `token_header` with
+  `token_prefix`.
+- **Re-auth on 401, exactly once.** If the retry still returns 401, that 401
+  response is passed through as a valid response — it is up to the checks layer to
+  mark the route as `skipped`, never as "vulnerable".
+- If the re-login itself fails, the error wraps `auth.ErrReAuthFailed` (testable
+  with `errors.Is`), distinguishing "auth is broken" from "the route genuinely isn't
+  authorised".
+- Concurrent 401s from the worker pool collapse into a **single** re-login
+  (generation counter + mutex), rather than one login per in-flight request.
+- Requests with a body must be re-executable (`GetBody`), or the retry after
+  re-auth is rejected with an explicit error instead of resending an empty body.
 
 ---
 
-## 7. Ordem de implementação (casos de teste)
+## 7. Implementation order (test cases)
 
-| Ordem | Check | Kind | Por quê |
+| Order | Check | Kind | Why |
 |---|---|---|---|
-| 1 | Headers ausentes | passivo | **Feito** — `internal/checks/headers.go`. Zero ambiguidade; valida o pipeline inteiro |
-| 2 | Secrets expostos | passivo | **Feito** — `internal/checks/secrets.go`. Só pattern matching; sem ataque |
-| 3 | SQLi boolean-based | ativo | **Feito** — `internal/checks/sqli.go`. 1º ataque real; exercita medição de ruído |
-| 4 | XSS refletido | ativo | **Feito** — `internal/checks/xss.go`. Injeta marcador, verifica reflexão sem escape |
-| (5) | IDOR | ativo | Requer relação usuário↔recurso (fase 2) |
-| (6) | JWT fraco (`alg:none`) | ativo | Validação de assinatura (fase 2) |
+| 1 | Missing headers | passive | **Done** — `internal/checks/headers.go`. Zero ambiguity; exercises the whole pipeline |
+| 2 | Exposed secrets | passive | **Done** — `internal/checks/secrets.go`. Pattern matching only; no attack |
+| 3 | SQLi boolean-based | active | **Done** — `internal/checks/sqli.go`. First real attack; exercises noise measurement |
+| 4 | Reflected XSS | active | **Done** — `internal/checks/xss.go`. Injects a marker, verifies unescaped reflection |
+| (5) | IDOR | active | Requires a user↔resource relationship (phase 2) |
+| (6) | Weak JWT (`alg:none`) | active | Signature validation (phase 2) |
 
 ---
 
-### Contrato do `sqli-boolean`
+### The `sqli-boolean` contract
 
-Implementado em `internal/checks/sqli.go` — o primeiro check ativo, e o primeiro
-que não lê o corpo de `Target.Baseline`.
+Implemented in `internal/checks/sqli.go` — the first active check, and the first
+that does not read `Target.Baseline`'s body.
 
-- **Payloads em pares `verdadeiro`/`falso`**, embutidos de
-  `internal/checks/payloads/sqli.txt` via `go:embed` (formato
-  `nome ||| payload-verdadeiro ||| payload-falso`, um por linha). Arquivo
-  malformado entra em pânico no `init()` — é dado próprio embutido no binário,
-  então é erro de build, não condição de runtime.
-- **`AppliesTo`** restringe jobs a endpoints com pelo menos um parâmetro de
-  `query` ou `path` — header e body ficam fora de escopo por ora (body
-  precisaria saber o formato do payload, não só uma string pra substituir).
-- **Medição de ruído ANTES de injetar**: repete um request benigno (valor
-  fixo `"1"`, mesmo parâmetro, mesmo endpoint) `sqliNoiseSamples` (3) vezes e
-  usa a maior diferença de tamanho de corpo entre essas repetições como piso
-  de ruído — isso mede variação de conteúdo dinâmico (timestamp, nonce, CSRF
-  token) que nada tem a ver com o parâmetro injetado.
-- **Só marca suspeita se `diff(verdadeiro, falso) > ruído`**, nunca um limiar
-  fixo — "ruído" é propriedade do alvo, não uma constante do código.
-  Outros parâmetros do endpoint são preenchidos com o mesmo valor benigno
-  durante o teste, pra um parâmetro obrigatório vazio não confundir o
-  resultado.
-- **Não lê `Target.Baseline` como conteúdo** — aquela baseline foi coletada
-  sem nenhum parâmetro preenchido, então não serve pra responder "mudar este
-  parâmetro muda a resposta?". Reusa só `Target.Baseline.URL` pra descobrir
-  scheme/host do alvo, já que nada mais no contrato de `Check` carrega isso.
-  Sem baseline (coleta falhou), o check devolve `Skippedf` — não tem como
-  saber pra onde mandar o request.
-- **`CapturedRequest` completo**: `Method`, `URL` (já com o payload
-  verdadeiro codificado, pronta pra reproduzir com `curl` ou pelo estágio
-  `attack`), `InjectedParam`, `Payload`.
-
----
-
-### Contrato do `attack`
-
-Implementado em `internal/attack` — lê `findings.json`, tenta confirmar cada
-`Finding` não confirmado, grava `confirmed.json`. É um processo **separado** do
-`scan`: não herda sessão, não herda estado, autentica de novo do zero contra o
-mesmo `config.yaml`.
-
-- **Registry por `CheckName`**, mesmo padrão `init()` + `RegisterCheck` de
-  `internal/checks`: cada check com PoC implementa `attack.Confirmer` (método
-  `CheckName() string` + `Confirm(ctx, Finding, HTTPClient) (Finding, error)`) e
-  se registra via `attack.Register`. `attack.Run` despacha cada finding pelo
-  nome; sem confirmer registrado pra aquele `CheckName`, o finding passa
-  **inalterado** pro `confirmed.json`, listado como `skipped` — nunca promovido a
-  `Confirmed: true` sem verificação de verdade. `missing-headers` e
-  `exposed-secrets` caem nesse caso hoje: são observação direta de uma única
-  resposta já coletada, não têm o que "reproduzir".
-- **Gate `Destructive` reaplicado**, independente do que o `scan` já decidiu —
-  `attack` é invocação de processo separada, não pode assumir que aquela decisão
-  ainda vale.
-- **`sqli-boolean`**: dois passos.
-  1. Re-verifica o MESMO comparativo verdadeiro/falso do check, medindo ruído de
-     novo agora (não confia no que o `scan` mediu antes — o alvo pode ter mudado).
-     Só essa reprodução já é o suficiente pra `Confirmed: true`.
-  2. Só então, tenta extrair **o nome do banco via `UNION SELECT`** — leitura
-     pura, nunca escrita. Descobre a contagem de colunas testando 1 até
-     `sqliMaxColumns` (6), envolvendo uma constante em `CONCAT('ATTACKPOC_','OK','_ENDPOC')`
-     na última coluna — achar o marcador na resposta prova contagem certa,
-     `CONCAT` funciona nesse motor, e a última coluna aparece na resposta, tudo
-     num request só. Encontrada a contagem, tenta candidatos
-     (`database()`, `current_database()`, `DB_NAME()`, `sqlite_version()`) na
-     mesma posição. **Best-effort**: se a extração falhar (motor desconhecido),
-     o finding continua confirmado pela reprodução booleana — só a nota de
-     evidência muda pra dizer que a extração não funcionou.
-  3. `FalsePayloadFor` (exportada de `internal/checks/sqli.go`) reconstrói o
-     payload falso pareado ao verdadeiro do `Finding`, reusando o MESMO
-     `payloads/sqli.txt` — uma fonte de verdade só, sem duplicar o parser.
-- **`xss-reflected`**: reenvia com um marcador **novo, gerado agora**
-  (`crypto/rand`, não o payload original do scan) — evita cache e distingue
-  "refletiu sem escape" (confirmado) de "refletiu mas escapado" (não
-  confirmado, mas dito explicitamente — não é o mesmo que "não refletiu").
-- **`withInjectedValue`** reescreve a URL capturada trocando só o valor do
-  parâmetro injetado, sem precisar saber a lista de parâmetros do endpoint —
-  funciona pra query (via `net/url`) e pra path (substring na forma
-  *decodificada* de `u.Path`; comparar contra a forma escapada foi um bug real
-  encontrado pelos próprios testes deste pacote — `url.URL` guarda o path
-  decodificado e só usa `RawPath` quando ele bate com o `Path` atual).
-- **Sonda com o método real do endpoint, não força GET.** Segue o princípio
-  já declarado em §1 ("só testa métodos seguros: GET, POST de teste") —
-  DELETE/PUT/PATCH nunca chegam neste check (o gate não-destrutivo do engine
-  já filtra `Destructive` antes de qualquer job existir); POST fica em
-  escopo de propósito. Tradeoff consciente: um endpoint POST que acaba não
-  sendo vulnerável ainda absorve até `sqliNoiseSamples + 2×pares` requests
-  por parâmetro até ser descartado — se aquela rota cria um recurso a cada
-  chamada, sobra dado de teste real (modesto, com rate limit) no lab. Forçar
-  GET evitaria isso, mas um servidor que roteia estrito por método
-  responderia 404 em toda sonda e o check "limparia" uma rota que nunca
-  chegou a exercitar de verdade — um jeito de falhar pior do que umas linhas
-  extra no banco do próprio lab do operador.
+- **Payloads in `true`/`false` pairs**, embedded from
+  `internal/checks/payloads/sqli.txt` via `go:embed` (format
+  `name ||| true-payload ||| false-payload`, one per line). A malformed file
+  panics in `init()` — it is our own data, embedded in the binary, so it's a build
+  error, not a runtime condition.
+- **`AppliesTo`** restricts jobs to endpoints with at least one `query` or `path`
+  parameter — header and body are out of scope for now (body would need to know
+  the payload's format, not just a string to substitute).
+- **Noise measurement BEFORE injecting**: repeats a benign request (fixed value
+  `"1"`, same parameter, same endpoint) `sqliNoiseSamples` (3) times and uses the
+  largest body-size difference across those repetitions as the noise floor —
+  this measures the variation from dynamic content (timestamp, nonce, CSRF token)
+  that has nothing to do with the injected parameter.
+- **Only flags a suspicion if `diff(true, false) > noise`**, never a fixed
+  threshold — "noise" is a property of the target, not a constant in the code.
+  The endpoint's other parameters are filled with the same benign value during the
+  test, so an empty required parameter cannot confound the result.
+- **Never reads `Target.Baseline` as content** — that baseline was collected with
+  no parameter filled in, so it cannot answer "does changing this parameter change
+  the response?". It reuses only `Target.Baseline.URL` to learn the target's
+  scheme/host, since nothing else in the `Check` contract carries that. With no
+  baseline (collection failed), the check returns `Skippedf` — there is no way to
+  know where to send the request.
+- **Full `CapturedRequest`**: `Method`, `URL` (already encoding the true payload,
+  ready to reproduce with `curl` or via the `attack` stage), `InjectedParam`,
+  `Payload`.
 
 ---
 
-### Contrato do `report`
+### The `attack` contract
 
-Implementado em `internal/report` — lê `confirmed.json` e grava `report.html` +
-`report.json`. É o único estágio que não toca a rede: nada aqui constrói ou
-envia um request, então não precisa de `ScopeGuard`, cliente HTTP nem
-autenticação.
+Implemented in `internal/attack` — reads `findings.json`, tries to confirm each
+unconfirmed `Finding`, writes `confirmed.json`. It is a **separate** process from
+`scan`: it inherits no session, no state, and authenticates from scratch against the
+same `config.yaml`.
 
-- **`html/template`, nunca `text/template`.** `Evidence` e `Request` carregam
-  texto potencialmente influenciado por quem foi atacado — payload de SQLi,
-  marcador de XSS refletido, trecho cru de resposta. `html/template`
-  escapa por contexto automaticamente; renderizar isso com `text/template`
-  tornaria o próprio relatório um sink de XSS ao abrir no navegador.
-  `TestWriteHTML_EscapesAttackerControlledContent` prova isso injetando um
-  `<script>` real num finding de exemplo e checando que ele sai como
-  `&lt;script&gt;`, nunca como tag executável.
-- **Template embutido via `go:embed`** (`internal/report/template.html`),
-  mesmo padrão de `patterns/secrets.txt` e `payloads/sqli.txt`: fica ao lado
-  do pacote que o usa, parseado uma vez em `init()` — template malformado é
-  erro de build, não condição de runtime.
-- **Ordenação determinística**: `Build` ordena por severidade (crítico → alto
-  → médio → baixo → desconhecido), depois confirmado antes de não-confirmado,
-  depois por `CheckName`, `Endpoint.Path` e `ID` como desempate — nunca pela
-  ordem de descoberta do `scan`. Isso vale tanto pro HTML quanto pro
-  `report.json`, então os dois arquivos mostram os achados na mesma ordem e
-  `report.json` fica byte-idêntico entre duas execuções sobre o mesmo
-  `confirmed.json`, mantendo o invariante de determinismo do pipeline.
-- **Resumo executivo** conta achados por severidade e, dentro de cada
-  severidade, quantos já foram confirmados por PoC — a distinção importa: um
-  `high` confirmado pesa muito mais que um `high` ainda só suspeito.
-- **Recomendação de correção vive só no pacote `report`** (mapa
-  `CheckName` → texto), não em `model.Finding`: é conteúdo de apresentação,
-  não faz parte do schema JSON versionado que `scan` e `attack` populam.
-  Check sem entrada no mapa recebe um texto genérico de fallback em vez de
-  ficar em branco.
-- **`--json` é opcional**: por padrão deriva de `--out` trocando a extensão
-  (`report.html` → `report.json`), mas aceita um caminho explícito.
+- **Registry by `CheckName`**, the same `init()` + `RegisterCheck` pattern as
+  `internal/checks`: each check with a PoC implements `attack.Confirmer` (method
+  `CheckName() string` + `Confirm(ctx, Finding, HTTPClient) (Finding, error)`) and
+  registers via `attack.Register`. `attack.Run` dispatches each finding by name;
+  with no registered confirmer for that `CheckName`, the finding passes through
+  **unchanged** to `confirmed.json`, listed as `skipped` — never promoted to
+  `Confirmed: true` without real verification. `missing-headers` and
+  `exposed-secrets` fall into that case today: they are direct observations of a
+  single already-collected response, with nothing to "reproduce".
+- **The `Destructive` gate is reapplied**, independent of whatever `scan` already
+  decided — `attack` is a separate process invocation and cannot assume that
+  decision still holds.
+- **`sqli-boolean`**: two steps.
+  1. Re-verifies the SAME true/false comparison the check made, measuring noise
+     again now (it does not trust what `scan` measured earlier — the target may have
+     changed). This reproduction alone is enough for `Confirmed: true`.
+  2. Only then does it try to extract **the database name via `UNION SELECT`** —
+     a pure read, never a write. It discovers the column count by testing 1 through
+     `sqliMaxColumns` (6), wrapping a constant in `CONCAT('ATTACKPOC_','OK','_ENDPOC')`
+     in the last column — finding the marker in the response proves the right
+     column count, that `CONCAT` works on this engine, and that the last column
+     surfaces in the response, all in a single request. Once the count is found, it
+     tries candidates (`database()`, `current_database()`, `DB_NAME()`,
+     `sqlite_version()`) in the same position. **Best-effort**: if the extraction
+     fails (unknown engine), the finding stays confirmed by the boolean reproduction
+     — only the evidence note changes to say extraction didn't work.
+  3. `FalsePayloadFor` (exported from `internal/checks/sqli.go`) reconstructs the
+     false payload paired with the `Finding`'s true one, reusing the SAME
+     `payloads/sqli.txt` — a single source of truth, no duplicated parser.
+- **`xss-reflected`**: resends with a **fresh, newly generated** marker
+  (`crypto/rand`, not the scan's original payload) — avoids caching and
+  distinguishes "reflected unescaped" (confirmed) from "reflected but escaped"
+  (not confirmed, but stated explicitly — not the same as "did not reflect").
+- **`withInjectedValue`** rewrites the captured URL, swapping only the injected
+  parameter's value, without needing the endpoint's parameter list — works for
+  query (via `net/url`) and for path (a substring match against the *decoded* form
+  of `u.Path`; comparing against the escaped form was a real bug this package's own
+  tests found — `url.URL` stores the decoded path and only uses `RawPath` when it
+  matches the current `Path`).
+- **Probes with the endpoint's real method, never forces GET.** Follows the
+  principle already stated in §1 ("only safe methods are tested: GET, test POST")
+  — DELETE/PUT/PATCH never reach this check (the engine's non-destructive gate
+  already filters `Destructive` before any job exists); POST stays in scope on
+  purpose. Deliberate tradeoff: a POST endpoint that turns out not vulnerable
+  still absorbs up to `sqliNoiseSamples + 2×pairs` requests per parameter before
+  being dismissed — if that route creates a resource on every call, it leaves
+  behind real (modest, rate-limited) test data in the lab. Forcing GET would avoid
+  this, but a server that routes strictly by method would answer 404 to every
+  probe, and the check would "clean" a route it never actually exercised — a worse
+  way to fail than a few extra rows in the operator's own lab database.
 
 ---
 
-## 8. Testes
+### The `report` contract
 
-- **Unit** — cada check contra `HTTPClient` fake com responses de `testdata/`; sem rede.
-- **Baseline** — teste dedicado provando que conteúdo dinâmico não vira falso-positivo.
-- **ScopeGuard** — teste provando que host fora da allowlist é bloqueado (segurança do scanner).
-- **Integração** — opcional, contra a API vulnerável de lab via Docker Compose:
-  `lab/` (módulo Go próprio) + Postgres real, subidos por `docker-compose.yml`
-  na raiz do repo. Cobre as quatro classes deste projeto — SQLi boolean-based
-  com extração via `UNION SELECT` de verdade, secrets expostos, headers
-  ausentes, e XSS refletido (`scan` descobre via `internal/checks/xss.go`,
-  `attack` confirma com marcador próprio via `internal/attack/xss.go`).
-  `GET /items/{id}` é parametrizado de propósito — um controle negativo pra
-  notar um falso positivo. Não faz parte de `go test ./...`; é um alvo pra
-  rodar o ciclo `scan → attack → report` manualmente. Ver README.md §Lab.
+Implemented in `internal/report` — reads `confirmed.json` and writes `report.html`
++ `report.json`. It is the only stage that never touches the network: nothing here
+builds or sends a request, so it needs no `ScopeGuard`, no HTTP client, and no
+authentication.
+
+- **`html/template`, never `text/template`.** `Evidence` and `Request` carry text
+  potentially influenced by whoever was attacked — an SQLi payload, a reflected XSS
+  marker, a raw response snippet. `html/template` escapes by context automatically;
+  rendering this with `text/template` would turn the report itself into an XSS sink
+  when opened in a browser. `TestWriteHTML_EscapesAttackerControlledContent` proves
+  this by injecting a real `<script>` into a sample finding and checking that it
+  comes out as `&lt;script&gt;`, never as an executable tag.
+- **Template embedded via `go:embed`** (`internal/report/template.html`), the same
+  pattern as `patterns/secrets.txt` and `payloads/sqli.txt`: it lives beside the
+  package that uses it, parsed once in `init()` — a malformed template is a build
+  error, not a runtime condition.
+- **Deterministic ordering**: `Build` sorts by severity (critical → high → medium →
+  low → unknown), then confirmed before unconfirmed, then by `CheckName`,
+  `Endpoint.Path` and `ID` as a tiebreaker — never by the order `scan` discovered
+  them in. This holds for both the HTML and `report.json`, so the two files show
+  findings in the same order and `report.json` comes out byte-identical across two
+  runs over the same `confirmed.json`, preserving the pipeline's determinism
+  invariant.
+- **Executive summary** counts findings by severity and, within each severity, how
+  many have already been confirmed by a PoC — the distinction matters: a confirmed
+  `high` weighs far more than a `high` that's still only a suspicion.
+- **Remediation copy lives only in the `report` package** (a `CheckName` → text
+  map), not on `model.Finding`: it is presentation content, not part of the
+  versioned JSON schema `scan` and `attack` populate. A check with no entry in the
+  map gets a generic fallback text instead of being left blank.
+- **`--json` is optional**: by default it derives from `--out` by swapping the
+  extension (`report.html` → `report.json`), but it accepts an explicit path.
+
+---
+
+## 8. Tests
+
+- **Unit** — each check against a fake `HTTPClient` with responses from `testdata/`; no network.
+- **Baseline** — a dedicated test proving dynamic content does not turn into a false positive.
+- **ScopeGuard** — a dedicated test proving a host outside the allowlist is blocked (the scanner's own security).
+- **Integration** — optional, against the lab's vulnerable API via Docker Compose:
+  `lab/` (its own Go module) + a real Postgres, brought up by `docker-compose.yml`
+  at the repo root. Covers this project's four classes — boolean-based SQLi with
+  real extraction via `UNION SELECT`, exposed secrets, missing headers, and
+  reflected XSS (`scan` discovers it via `internal/checks/xss.go`, `attack`
+  confirms it with its own marker via `internal/attack/xss.go`).
+  `GET /items/{id}` is deliberately parametrized — a negative control to notice a
+  false positive. Not part of `go test ./...`; it's a target for running the
+  `scan → attack → report` cycle by hand. See README.md's Lab section.

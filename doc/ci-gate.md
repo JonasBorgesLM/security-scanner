@@ -15,8 +15,9 @@ diff` that decides whether the build passes.
 
 The 2 is kept separate from the 1 on purpose. A CI step that cannot tell
 the two apart **treats a broken scanner as a clean report** — the same
-confusion Stage 1 of this project's evolution spent itself eliminating,
-re-staged at the pipeline level.
+confusion Stage 1 of this project's evolution spent itself eliminating
+(`doc/security-scanner-evolucao.md` §6, "Stage 1 — Honesty"), re-staged
+at the pipeline level.
 
 What counts as "worse" is two things, and the second is what an ordinary
 diff cannot see:
