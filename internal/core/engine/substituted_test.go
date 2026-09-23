@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 // countingCheck records whether it was invoked, which is the point of every

@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/scope"
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
+	"github.com/JonasBorgesLM/warden/internal/core/scope"
+	"github.com/JonasBorgesLM/warden/internal/ports"
 )
 
 var _ ports.HTTPClient = (*Client)(nil)
@@ -37,7 +37,7 @@ type Client struct {
 // A timeout of zero or less means no per-request limit. That is the
 // pre-existing behaviour, kept reachable for tests that need a request to
 // outlive a deliberate stall; config.validateEngine rejects a negative
-// value, and cmd/scanner supplies a default, so no real scan runs without
+// value, and cmd/warden supplies a default, so no real scan runs without
 // one.
 //
 // A supplied httpClient is never mutated in place — New works on a shallow

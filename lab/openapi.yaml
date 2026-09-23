@@ -1,9 +1,9 @@
 openapi: 3.0.3
 info:
-  title: security-scanner lab API
+  title: warden lab API
   version: "1.0"
   description: >
-    Deliberately vulnerable API for exercising security-scanner end to end.
+    Deliberately vulnerable API for exercising warden end to end.
     See lab/main.go for what each route does and why.
 servers:
   - url: http://localhost:8080

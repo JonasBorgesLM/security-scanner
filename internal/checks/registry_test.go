@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 // fakeCheck is a minimal model.Check for exercising the registry.

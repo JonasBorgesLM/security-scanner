@@ -1,6 +1,6 @@
 # Security Scanner — Evolution: audit, decisions and roadmap
 
-Complements `security-scanner-projeto.md`, which remains the source of truth
+Complements `warden-projeto.md`, which remains the source of truth
 for the **current** architecture. This document records the audit performed
 on the implemented code, the structural decisions that came out of it, and
 the resulting order of evolution. Nothing here describes code that already
@@ -10,7 +10,7 @@ exists.
 
 > **Status (complete).** The five stages below have all been implemented. The
 > scanner went from 4 to 12 checks, gained the coverage block (`schema_version`
-> 3), `scanner diff`, SARIF output and a documented CI gate. Two cross-cutting
+> 3), `warden diff`, SARIF output and a documented CI gate. Two cross-cutting
 > capabilities the roadmap did not foresee came out of the way: a second pair
 > of identities (`Clients.Anonymous`/`Secondary`) and the token exposed to the
 > check (`Clients.SessionToken`), which are what unlocked `auth-required`,
@@ -117,7 +117,7 @@ What follows is what isn't in good shape.
 
 | # | Sev | Finding | Evidence | Issue |
 |---|---|---|---|---|
-| 1 | HIGH | Skipped/failed routes never reach the report | `cmd/scanner/main.go:163,167`; `model/finding.go:44-47`; `report/report.go:105-115` | #12 |
+| 1 | HIGH | Skipped/failed routes never reach the report | `cmd/warden/main.go:163,167`; `model/finding.go:44-47`; `report/report.go:105-115` | #12 |
 | 2 | HIGH | "Byte-identical" only holds against a static target | `checks/sqli.go:263-266`; `checks/xss.go` (`BaselineResponse`) | #13 |
 | 3 | MEDIUM | Active checks clear POST routes they never exercised | `checks/sqli.go:322-356` (body `nil`), `sqli.go:163-171` | #28 |
 | 4 | MEDIUM | No per-request timeout | `adapters/httpclient/httpclient.go:38-39` | #15 |
@@ -141,7 +141,7 @@ A scan where auth broke on 90% of routes produces a `report.html`
 indistinguishable from a clean scan of a healthy API — just with fewer
 findings.
 
-It's blocking for `scanner diff`: comparing yesterday's `findings.json` with
+It's blocking for `warden diff`: comparing yesterday's `findings.json` with
 today's would report `-resolved` for a route that simply wasn't examined
 today. A false green is the worst possible failure mode for a regression
 guard.
@@ -227,7 +227,7 @@ what it did, so measuring it with itself would be circular:
 
 ```
 go run ./tools/reqcount -upstream http://localhost:8080 &
-scanner scan --spec openapi.yaml --config config-via-proxy.yaml --out findings.json
+warden scan --spec openapi.yaml --config config-via-proxy.yaml --out findings.json
 kill -TERM %1
 ```
 
@@ -358,7 +358,7 @@ Invariant 8 is now stated in two parts:
 
 - **A finding's identity is deterministic.** `ID` derives only from
   check + method + path + discriminator, and never from anything measured on
-  the target. It's what `scanner diff` compares by — never file bytes.
+  the target. It's what `warden diff` compares by — never file bytes.
 - **Evidence is descriptive, not comparable.** Body snippets, noise floor and
   byte differences are what a human reads to judge the finding; they vary
   with the target and that's expected.
@@ -508,7 +508,7 @@ of their own, and collection stays at 3 requests per endpoint.
 
 | Issue | Item |
 |---|---|
-| #24 | `scanner diff` |
+| #24 | `warden diff` |
 | #29 | SARIF output → CI gate |
 
 **Why only now, despite being item 2 of the original plan:** a diff over
@@ -543,7 +543,7 @@ probably once the CI gate matures.
 | Change | Reason |
 |---|---|
 | Ten issues that didn't exist jump ahead of everything | The audit (§3) and the measurement (§3.3) found defects the original plan had no way to see |
-| `scanner diff` drops from 2nd place to Stage 4 | A diff over a dishonest report is a false green |
+| `warden diff` drops from 2nd place to Stage 4 | A diff over a dishonest report is a false green |
 | `auth-required` comes in as the 1st new check | It didn't exist in the original plan; it's the only one that concludes against a validated API |
 | The "passive block" dissolves | Three of the four weren't passive (§2.1); `insecure-cookie-flags` is out for being harmless on a JSON API; `security-txt-missing` is out for being hygiene, not a vulnerability |
 | `deps` becomes a CI step (#19) | Source analysis + a result that isn't comparable across runs (§2.3) |

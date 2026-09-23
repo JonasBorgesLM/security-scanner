@@ -2,7 +2,7 @@ package config
 
 import (
 	"errors"
-	"github.com/JonasBorgesLM/security-scanner/internal/envexpand"
+	"github.com/JonasBorgesLM/warden/internal/envexpand"
 	"strings"
 	"testing"
 	"time"
@@ -261,7 +261,7 @@ func TestLoad_RequestTimeoutLongerThanTimeout(t *testing.T) {
 }
 
 // TestLoad_RequestTimeoutIsOptional pins both halves of the field's
-// contract: absent is valid (cmd/scanner supplies the default), and a value
+// contract: absent is valid (cmd/warden supplies the default), and a value
 // that is present survives parsing intact.
 func TestLoad_RequestTimeoutIsOptional(t *testing.T) {
 	// testdata/config.yaml sets no request_timeout at all. It does carry a

@@ -15,7 +15,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 // ErrNoProofOfConcept is what a Confirmer returns for a finding that is a

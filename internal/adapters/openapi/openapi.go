@@ -12,7 +12,7 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 // httpMethods lists the operations PathItem exposes, in a fixed order, so

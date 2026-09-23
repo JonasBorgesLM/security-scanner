@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
+	"github.com/JonasBorgesLM/warden/internal/ports"
 )
 
 // maxProbeBodyBytes caps how much of any single PoC response is read.

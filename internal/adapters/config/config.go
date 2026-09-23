@@ -1,6 +1,6 @@
 // Package config loads and validates config.yaml, the file that drives
 // every pipeline stage (scan/attack/report): target, scope allowlist, auth,
-// engine tuning, and enabled checks. See doc/security-scanner-projeto.md §6
+// engine tuning, and enabled checks. See doc/warden-projeto.md §6
 // for the format this package implements.
 package config
 
@@ -16,7 +16,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/envexpand"
+	"github.com/JonasBorgesLM/warden/internal/envexpand"
 )
 
 // SupportedSchemaVersion is the only config.yaml schema_version this
@@ -133,7 +133,7 @@ type Engine struct {
 	// run. Without it the two are the same number, so a handful of routes
 	// that accept a connection and never answer hold every worker until
 	// the global deadline fires — and the run is then discarded as
-	// incomplete. Optional; cmd/scanner supplies a default when unset.
+	// incomplete. Optional; cmd/warden supplies a default when unset.
 	RequestTimeout  Duration `yaml:"request_timeout"`
 	TestDestructive bool     `yaml:"test_destructive"`
 	// TestCreates opts in to sending a request body, which lets active

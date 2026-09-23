@@ -21,22 +21,22 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/adapters/config"
-	"github.com/JonasBorgesLM/security-scanner/internal/adapters/httpclient"
-	"github.com/JonasBorgesLM/security-scanner/internal/adapters/openapi"
-	"github.com/JonasBorgesLM/security-scanner/internal/attack"
-	"github.com/JonasBorgesLM/security-scanner/internal/checks"
-	"github.com/JonasBorgesLM/security-scanner/internal/core/auth"
-	"github.com/JonasBorgesLM/security-scanner/internal/core/engine"
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
-	"github.com/JonasBorgesLM/security-scanner/internal/core/scope"
-	"github.com/JonasBorgesLM/security-scanner/internal/diff"
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
-	"github.com/JonasBorgesLM/security-scanner/internal/report"
+	"github.com/JonasBorgesLM/warden/internal/adapters/config"
+	"github.com/JonasBorgesLM/warden/internal/adapters/httpclient"
+	"github.com/JonasBorgesLM/warden/internal/adapters/openapi"
+	"github.com/JonasBorgesLM/warden/internal/attack"
+	"github.com/JonasBorgesLM/warden/internal/checks"
+	"github.com/JonasBorgesLM/warden/internal/core/auth"
+	"github.com/JonasBorgesLM/warden/internal/core/engine"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/scope"
+	"github.com/JonasBorgesLM/warden/internal/diff"
+	"github.com/JonasBorgesLM/warden/internal/ports"
+	"github.com/JonasBorgesLM/warden/internal/report"
 )
 
 // defaultRequestTimeout bounds one request when config.yaml does not say.
-// Policy lives here rather than in the config package because cmd/scanner
+// Policy lives here rather than in the config package because cmd/warden
 // is the composition root — the place this project already puts the
 // decisions about which concrete behaviour the core runs against.
 //
@@ -81,13 +81,13 @@ func main() {
 	}
 
 	// A regression is a result, not a failure of the tool, so it gets its
-	// own exit code and no "scanner:" error line. A CI step can then tell
+	// own exit code and no "warden:" error line. A CI step can then tell
 	// "the comparison found something" from "the comparison broke".
 	if errors.Is(err, errRegressed) {
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "scanner: %v\n", err)
+		fmt.Fprintf(os.Stderr, "warden: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -98,13 +98,13 @@ func main() {
 var errRegressed = errors.New("diff: the newer run is worse")
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `scanner - security scanner for lab APIs
+	fmt.Fprintln(os.Stderr, `warden - security scanner for lab APIs
 
 Usage:
-  scanner scan   --spec openapi.yaml --config config.yaml --out findings.json
-  scanner attack --in findings.json  --config config.yaml --out confirmed.json
-  scanner report --in confirmed.json --out report.html [--json report.json] [--sarif report.sarif]
-  scanner diff   before.json after.json [--fail-on high]
+  warden scan   --spec openapi.yaml --config config.yaml --out findings.json
+  warden attack --in findings.json  --config config.yaml --out confirmed.json
+  warden report --in confirmed.json --out report.html [--json report.json] [--sarif report.sarif]
+  warden diff   before.json after.json [--fail-on high]
 
 Only ever point this at infrastructure you own or are authorised to test.
 Hosts outside scope.allowed_hosts in config.yaml are rejected before any
@@ -663,7 +663,7 @@ func runDiff(args []string) error {
 		return err
 	}
 	if fs.NArg() != 2 {
-		return errors.New("diff: expected two stage files, e.g. scanner diff before.json after.json")
+		return errors.New("diff: expected two stage files, e.g. warden diff before.json after.json")
 	}
 
 	before, err := readFindings(fs.Arg(0))

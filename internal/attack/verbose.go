@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/checks"
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/checks"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 func init() {

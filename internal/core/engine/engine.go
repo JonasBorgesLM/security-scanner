@@ -27,8 +27,8 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/ports"
 )
 
 // maxBodyBytes caps how much of any single response is held in memory.
@@ -322,7 +322,7 @@ func (e *Engine) baselineRequest(ctx context.Context, ep model.Endpoint, method 
 //
 // Routes AbsentFromTarget reports as missing are dropped here as well.
 // Dropping them produces no Result, and therefore no coverage entry — so
-// cmd/scanner accounts for them separately, from the same predicate, the
+// cmd/warden accounts for them separately, from the same predicate, the
 // way it already does for endpoints the destructive gate held back.
 //
 // Checks are paired in name order so the resulting job list — and therefore

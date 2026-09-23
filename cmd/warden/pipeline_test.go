@@ -16,9 +16,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/adapters/config"
-	"github.com/JonasBorgesLM/security-scanner/internal/checks"
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/adapters/config"
+	"github.com/JonasBorgesLM/warden/internal/checks"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 // This is the test the unit suites cannot give: every layer assembled the
@@ -1378,7 +1378,7 @@ func newDynamicSQLiServer(t *testing.T) *httptest.Server {
 // holds. Evidence quotes the target's body, and any API worth scanning puts
 // something that moves in it, so the bytes differ by design.
 //
-// What must not move is IDENTITY. scanner diff compares findings by ID, so
+// What must not move is IDENTITY. warden diff compares findings by ID, so
 // a scan of an unchanged target must report the same set of ids or every
 // re-scan looks like a wave of fixes and regressions.
 //

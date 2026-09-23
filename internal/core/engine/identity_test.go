@@ -9,8 +9,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/auth"
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/auth"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 // TestRun_AnonymousIdentityCarriesNoCredentials is the capability

@@ -17,8 +17,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/envexpand"
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
+	"github.com/JonasBorgesLM/warden/internal/envexpand"
+	"github.com/JonasBorgesLM/warden/internal/ports"
 )
 
 // ErrReAuthFailed is returned by Do when a request comes back 401 and the
@@ -45,7 +45,7 @@ type Credentials struct {
 }
 
 // Config mirrors the auth: section of config.yaml (see
-// doc/security-scanner-projeto.md §6). Password may contain a ${VAR}
+// doc/warden-projeto.md §6). Password may contain a ${VAR}
 // reference; New expands it from the environment so real credentials never
 // need to be committed.
 type Config struct {
@@ -93,7 +93,7 @@ var _ ports.HTTPClient = (*Authenticator)(nil)
 // inner MUST be the ScopeGuard-enforcing client from
 // internal/adapters/httpclient. This package cannot verify that — the whole
 // point of ports.HTTPClient is that core code doesn't know which adapter it
-// got — so the guarantee lives at the composition root in cmd/scanner,
+// got — so the guarantee lives at the composition root in cmd/warden,
 // which is the only place allowed to construct this. Passing a bare
 // *http.Client here would silently disable the scanner's only security
 // boundary (CLAUDE.md invariant #1) without any compile or test failure.

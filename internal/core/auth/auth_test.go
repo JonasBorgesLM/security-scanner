@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/envexpand"
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
+	"github.com/JonasBorgesLM/warden/internal/envexpand"
+	"github.com/JonasBorgesLM/warden/internal/ports"
 )
 
 // fakeAPI simulates a lab API with a /login endpoint and a /protected

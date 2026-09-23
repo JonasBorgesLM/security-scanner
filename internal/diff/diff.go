@@ -25,7 +25,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 // Report is what changed between two runs.
