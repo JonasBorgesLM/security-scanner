@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 // makeJWT builds a compact token with the given alg and claims. The

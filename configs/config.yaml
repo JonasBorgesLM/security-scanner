@@ -4,7 +4,7 @@
 # references before running:
 #
 #   export LAB_PASSWORD='...'
-#   scanner scan --spec openapi.yaml --config configs/config.yaml
+#   warden scan --spec openapi.yaml --config configs/config.yaml
 #
 # scope.allowed_hosts is the hard security boundary: any request to a host
 # not listed here is rejected before it leaves the process. The scanner also

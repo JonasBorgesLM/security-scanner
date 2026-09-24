@@ -1,7 +1,7 @@
 # Running the scanner as a CI gate
 
 The scanner produces two artifacts a pipeline consumes: a **SARIF** file that
-GitHub Code Scanning reads natively, and an **exit code** from `scanner
+GitHub Code Scanning reads natively, and an **exit code** from `warden
 diff` that decides whether the build passes.
 
 ---
@@ -16,7 +16,7 @@ diff` that decides whether the build passes.
 The 2 is kept separate from the 1 on purpose. A CI step that cannot tell
 the two apart **treats a broken scanner as a clean report** — the same
 confusion Stage 1 of this project's evolution spent itself eliminating
-(`doc/security-scanner-evolucao.md` §6, "Stage 1 — Honesty"), re-staged
+(`doc/warden-evolucao.md` §6, "Stage 1 — Honesty"), re-staged
 at the pipeline level.
 
 What counts as "worse" is two things, and the second is what an ordinary
@@ -52,8 +52,8 @@ jobs:
       - uses: actions/setup-go@v5
         with: {go-version-file: go.mod}
 
-      - name: Build the scanner
-        run: go build -o scanner ./cmd/scanner
+      - name: Build warden
+        run: go build -o warden ./cmd/warden
 
       # The target must be up and inside scope.allowed_hosts.
       - name: Start the target
@@ -63,9 +63,9 @@ jobs:
         env:
           LAB_PASSWORD: ${{ secrets.LAB_PASSWORD }}
         run: |
-          ./scanner scan   --spec docs/openapi.yaml --config ci.yaml --out findings.json
-          ./scanner attack --in findings.json --config ci.yaml --out confirmed.json
-          ./scanner report --in confirmed.json --out report.html --sarif report.sarif
+          ./warden scan   --spec docs/openapi.yaml --config ci.yaml --out findings.json
+          ./warden attack --in findings.json --config ci.yaml --out confirmed.json
+          ./warden report --in confirmed.json --out report.html --sarif report.sarif
 
       - name: Publish to Code Scanning
         uses: github/codeql-action/upload-sarif@v3
@@ -76,7 +76,7 @@ jobs:
       # and the step is skipped rather than passing by mistake.
       - name: Compare against the baseline
         if: hashFiles('baseline/confirmed.json') != ''
-        run: ./scanner diff baseline/confirmed.json confirmed.json
+        run: ./warden diff baseline/confirmed.json confirmed.json
 ```
 
 ---

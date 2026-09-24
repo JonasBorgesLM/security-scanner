@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 func verboseServer(t *testing.T, onMalformed string) *httptest.Server {

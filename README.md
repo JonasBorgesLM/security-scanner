@@ -1,10 +1,13 @@
-# security-scanner
+# warden
 
 A Go CLI security scanner: discovers vulnerabilities in a live API, confirms
 them with controlled proof-of-concept attacks, and produces a report — built
 as a study project against the author's own lab API.
 
-[![CI](https://github.com/JonasBorgesLM/security-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/JonasBorgesLM/security-scanner/actions/workflows/ci.yml)
+Formerly `security-scanner`. Warden inspects the walls; its sibling
+[Sapper](https://github.com/JonasBorgesLM/sapper) mines them.
+
+[![CI](https://github.com/JonasBorgesLM/warden/actions/workflows/ci.yml/badge.svg)](https://github.com/JonasBorgesLM/warden/actions/workflows/ci.yml)
 
 ---
 
@@ -80,7 +83,7 @@ newer than the pin.
 ## Build
 
 ```bash
-go build -o scanner ./cmd/scanner
+go build -o warden ./cmd/warden
 ```
 
 ## Configuration
@@ -157,10 +160,10 @@ intermediate file is the contract between stages: git-diffable, reviewable
 by hand before `attack` runs, and re-runnable on a different machine.
 
 ```bash
-scanner scan   --spec openapi.yaml --config config.yaml --out findings.json
-scanner attack --in findings.json  --config config.yaml --out confirmed.json
-scanner report --in confirmed.json --out report.html [--json report.json] [--sarif report.sarif]
-scanner diff   before.json after.json [--fail-on high]     # exit 2 = regressed
+warden scan   --spec openapi.yaml --config config.yaml --out findings.json
+warden attack --in findings.json  --config config.yaml --out confirmed.json
+warden report --in confirmed.json --out report.html [--json report.json] [--sarif report.sarif]
+warden diff   before.json after.json [--fail-on high]     # exit 2 = regressed
 ```
 
 - **`scan`** — imports routes from the OpenAPI spec, authenticates against
@@ -187,7 +190,7 @@ Example `scan` run:
 
 ```console
 $ export LAB_PASSWORD='...'
-$ scanner scan --spec openapi.yaml --config configs/config.yaml
+$ warden scan --spec openapi.yaml --config configs/config.yaml
 target:     http://localhost:8080
 scope:      [localhost:8080 127.0.0.1:8080]
 spec:       openapi.yaml
@@ -208,7 +211,7 @@ never as "clean".
 Twelve checks, up from the four this project started with. Full rationale
 for each — including the audit that found the ones worth adding and the
 live measurements behind their design — is in
-[`doc/security-scanner-evolucao.md`](doc/security-scanner-evolucao.md).
+[`doc/warden-evolucao.md`](doc/warden-evolucao.md).
 
 | Check | Kind | What it reports | OWASP |
 |---|---|---|---|
@@ -301,7 +304,7 @@ another process's decision still holds.
 Example:
 
 ```console
-$ scanner attack --in findings.json --config configs/config.yaml
+$ warden attack --in findings.json --config configs/config.yaml
 target:     http://127.0.0.1:8099
 findings:   17 (0 destructive)
 
@@ -366,9 +369,9 @@ nothing to edit — just export the same password:
 ```bash
 export LAB_PASSWORD='lab-pass-only-123'
 
-scanner scan   --spec lab/openapi.yaml --config configs/config.yaml --out findings.json
-scanner attack --in findings.json      --config configs/config.yaml --out confirmed.json
-scanner report --in confirmed.json     --out report.html
+warden scan   --spec lab/openapi.yaml --config configs/config.yaml --out findings.json
+warden attack --in findings.json      --config configs/config.yaml --out confirmed.json
+warden report --in confirmed.json     --out report.html
 ```
 
 `scan` should find `sqli-boolean` on `/items`, `exposed-secrets` (2×) on
@@ -392,7 +395,7 @@ Lightweight hexagonal (ports/adapters), so checks are testable against a
 fake `HTTPClient` with no real network.
 
 ```
-cmd/scanner/          CLI and composition root — the only place that wires adapters
+cmd/warden/           CLI and composition root — the only place that wires adapters
 internal/
   ports/               interfaces: HTTPClient
   adapters/
@@ -411,7 +414,7 @@ internal/
     payloads/              sqli payloads and xss marker templates, via go:embed
   attack/                confirmers for the attack stage, same init() pattern
     attack.go             Register + dispatch by CheckName
-  diff/                  scanner diff: compares two stage files, coverage-aware
+  diff/                  warden diff: compares two stage files, coverage-aware
   report/                HTML template (go:embed) + JSON + SARIF writers
   envexpand/             shared ${VAR} expansion
 configs/                example config.yaml
@@ -421,8 +424,8 @@ docker-compose.yml       brings lab/ up behind a real Postgres — see §Lab abo
 ```
 
 Design details and rationale in
-[`doc/security-scanner-projeto.md`](doc/security-scanner-projeto.md) and
-[`doc/security-scanner-evolucao.md`](doc/security-scanner-evolucao.md).
+[`doc/warden-projeto.md`](doc/warden-projeto.md) and
+[`doc/warden-evolucao.md`](doc/warden-evolucao.md).
 
 ---
 
@@ -446,7 +449,7 @@ Tests never touch the outside network: checks run against a fake
 `ScopeGuard` (a host outside the allowlist is blocked before it ever becomes
 a connection) and for the parser's determinism.
 
-End-to-end tests (`cmd/scanner/pipeline_test.go`) assemble the whole stack —
+End-to-end tests (`cmd/warden/pipeline_test.go`) assemble the whole stack —
 ScopeGuard, authentication, rate limiter, collection, and a real check —
 against an `httptest.Server`, and verify, among other things, that
 collection never sends an unsafe method, that a destructive endpoint is

@@ -1,4 +1,4 @@
-module github.com/JonasBorgesLM/security-scanner
+module github.com/JonasBorgesLM/warden
 
 go 1.25.0
 

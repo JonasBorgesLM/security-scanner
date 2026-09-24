@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 // vulnerableSQLiServer simulates a backend that concatenates the `id` query

@@ -11,8 +11,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/ports"
 )
 
 func init() {

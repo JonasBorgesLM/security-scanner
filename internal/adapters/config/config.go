@@ -1,6 +1,6 @@
 // Package config loads and validates config.yaml, the file that drives
 // every pipeline stage (scan/attack/report): target, scope allowlist, auth,
-// engine tuning, and enabled checks. See doc/security-scanner-projeto.md §6
+// engine tuning, and enabled checks. See doc/warden-projeto.md §6
 // for the format this package implements.
 package config
 
@@ -16,7 +16,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/envexpand"
+	"github.com/JonasBorgesLM/warden/internal/envexpand"
 )
 
 // SupportedSchemaVersion is the only config.yaml schema_version this
@@ -91,6 +91,20 @@ type Auth struct {
 	// through the same endpoint with the same token handling, so repeating
 	// any of that would be an invitation to let the two drift apart.
 	SecondaryCredentials Credentials `yaml:"secondary_credentials"`
+	// CSRF, optional: a pre-login fetch for a signed double-submit cookie
+	// defense (see auth.CSRFConfig). Nil is the common case — a target
+	// whose login accepts credentials directly needs nothing here.
+	CSRF *CSRF `yaml:"csrf"`
+}
+
+// CSRF mirrors auth.CSRFConfig; see its own doc comment for what each
+// field does. All-or-nothing like Auth itself: FetchEndpoint and
+// TokenPath are required together, Method/TokenHeader default.
+type CSRF struct {
+	FetchEndpoint string `yaml:"fetch_endpoint"`
+	Method        string `yaml:"method"`
+	TokenPath     string `yaml:"token_path"`
+	TokenHeader   string `yaml:"token_header"`
 }
 
 // HasSecondary reports whether a second account was supplied.
@@ -118,7 +132,8 @@ func (a Auth) anyFieldSet() bool {
 		a.TokenHeader != "" ||
 		a.TokenPrefix != "" ||
 		a.Credentials.UsernameField != "" ||
-		len(a.ExtraHeaders) > 0
+		len(a.ExtraHeaders) > 0 ||
+		a.CSRF != nil
 }
 
 // Engine tunes the worker pool + rate limiter that drive active checks.
@@ -133,7 +148,7 @@ type Engine struct {
 	// run. Without it the two are the same number, so a handful of routes
 	// that accept a connection and never answer hold every worker until
 	// the global deadline fires — and the run is then discarded as
-	// incomplete. Optional; cmd/scanner supplies a default when unset.
+	// incomplete. Optional; cmd/warden supplies a default when unset.
 	RequestTimeout  Duration `yaml:"request_timeout"`
 	TestDestructive bool     `yaml:"test_destructive"`
 	// TestCreates opts in to sending a request body, which lets active
@@ -365,6 +380,16 @@ func (c *Config) validateAuth(errs *validationErrors) {
 		}
 		if c.Auth.SecondaryCredentials.Username == c.Auth.Credentials.Username {
 			errs.add("auth.secondary_credentials.username is the same account as auth.credentials.username; a check that compares two users would compare one with itself")
+		}
+	}
+	// Same all-or-nothing rule as the outer block: a csrf: section with
+	// fetch_endpoint but no token_path is a typo, not "no CSRF fetch".
+	if c.Auth.CSRF != nil {
+		if c.Auth.CSRF.FetchEndpoint == "" {
+			errs.add("auth.csrf.fetch_endpoint is required when auth.csrf is set")
+		}
+		if c.Auth.CSRF.TokenPath == "" {
+			errs.add("auth.csrf.token_path is required when auth.csrf is set")
 		}
 	}
 }

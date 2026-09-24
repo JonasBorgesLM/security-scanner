@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/adapters/config"
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/adapters/config"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 func TestAuthConfig_MapsEveryField(t *testing.T) {

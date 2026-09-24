@@ -1,4 +1,4 @@
-module security-scanner-lab
+module warden-lab
 
 go 1.23
 

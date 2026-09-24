@@ -6,13 +6,13 @@
 // nobody else can reproduce is an anecdote. The scanner's own output cannot
 // supply it: the whole point of that stage was that the scanner used to
 // under-report what it did, so measuring it with itself would have been
-// circular. See doc/security-scanner-evolucao.md §3.3 for the baseline
+// circular. See doc/warden-evolucao.md §3.3 for the baseline
 // these counts are compared against.
 //
 // # Usage
 //
 //	go run ./tools/reqcount -upstream http://localhost:8080 &
-//	scanner scan --spec openapi.yaml --config config-through-proxy.yaml --out findings.json
+//	warden scan --spec openapi.yaml --config config-through-proxy.yaml --out findings.json
 //	kill -TERM %1        # prints the JSON summary
 //
 // The config must point target.base_url at the proxy, and list the proxy's

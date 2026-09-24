@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 // newGatedServer answers 200 to a request carrying a token and `unauth` to

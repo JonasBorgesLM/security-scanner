@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 func targetWith(ep model.Endpoint, status int, probedMethod string) model.Target {

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/scope"
+	"github.com/JonasBorgesLM/warden/internal/core/scope"
 )
 
 // NewScopeGuardFor builds a guard that allows exactly srv's host.

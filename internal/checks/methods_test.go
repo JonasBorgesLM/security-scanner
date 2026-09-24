@@ -9,7 +9,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 // newTraceServer echoes the request back when TRACE is allowed, the way a

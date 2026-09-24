@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
+	"github.com/JonasBorgesLM/warden/internal/ports"
 )
 
 // Check kinds. A passive check draws its conclusions from the baseline
@@ -181,7 +181,7 @@ type Clients struct {
 	// configured it is the same client as Default — which is harmless,
 	// because a check that cares about identity only applies to endpoints
 	// the spec declares as protected, and those cannot exist without an
-	// auth block (cmd/scanner refuses that combination).
+	// auth block (cmd/warden refuses that combination).
 	Anonymous ports.HTTPClient
 }
 

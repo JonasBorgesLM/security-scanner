@@ -3,11 +3,11 @@ package report
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/JonasBorgesLM/security-scanner/internal/checks"
+	"github.com/JonasBorgesLM/warden/internal/checks"
 	"strings"
 	"testing"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 // exampleFindings mirrors what confirmed.json actually contains: a mix of

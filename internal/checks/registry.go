@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 // registry is keyed by check name. The mutex guards against a caller

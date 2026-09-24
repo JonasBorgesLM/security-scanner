@@ -2,7 +2,7 @@ package config
 
 import (
 	"errors"
-	"github.com/JonasBorgesLM/security-scanner/internal/envexpand"
+	"github.com/JonasBorgesLM/warden/internal/envexpand"
 	"strings"
 	"testing"
 	"time"
@@ -261,7 +261,7 @@ func TestLoad_RequestTimeoutLongerThanTimeout(t *testing.T) {
 }
 
 // TestLoad_RequestTimeoutIsOptional pins both halves of the field's
-// contract: absent is valid (cmd/scanner supplies the default), and a value
+// contract: absent is valid (cmd/warden supplies the default), and a value
 // that is present survives parsing intact.
 func TestLoad_RequestTimeoutIsOptional(t *testing.T) {
 	// testdata/config.yaml sets no request_timeout at all. It does carry a
@@ -301,6 +301,39 @@ func TestLoad_AuthWithOnlyUsernameField(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error = %q, want it to name the missing field %q", err, want)
 		}
+	}
+}
+
+// TestLoad_AuthCSRFHalfWritten is TestLoad_AuthWithOnlyUsernameField's
+// sibling one level down: a csrf: block with fetch_endpoint but no
+// token_path is a typo, not "no CSRF fetch", and must be rejected by name.
+func TestLoad_AuthCSRFHalfWritten(t *testing.T) {
+	_, err := Load("testdata/auth-csrf-half-written.yaml")
+	if err == nil {
+		t.Fatal("Load() error = nil, want a half-written csrf block to be rejected")
+	}
+	if !strings.Contains(err.Error(), "auth.csrf.token_path") {
+		t.Errorf("error = %q, want it to name auth.csrf.token_path", err)
+	}
+}
+
+// TestLoad_AuthWithCSRF proves a complete csrf: block loads and maps onto
+// config.Auth.CSRF with every field, not just enough to satisfy validation.
+func TestLoad_AuthWithCSRF(t *testing.T) {
+	cfg, err := Load("testdata/auth-with-csrf.yaml")
+	if err != nil {
+		t.Fatalf("Load() unexpected error = %v", err)
+	}
+	if cfg.Auth.CSRF == nil {
+		t.Fatal("Auth.CSRF = nil, want it populated")
+	}
+	want := CSRF{
+		FetchEndpoint: "/v1/auth/csrf-token",
+		TokenPath:     "csrf_token",
+		TokenHeader:   "X-CSRF-Token",
+	}
+	if *cfg.Auth.CSRF != want {
+		t.Errorf("Auth.CSRF = %+v, want %+v", *cfg.Auth.CSRF, want)
 	}
 }
 

@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/adapters/httpclient"
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
-	"github.com/JonasBorgesLM/security-scanner/internal/core/scope"
+	"github.com/JonasBorgesLM/warden/internal/adapters/httpclient"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/scope"
 )
 
 func redirectScoped(t *testing.T, srv *httptest.Server) model.Clients {

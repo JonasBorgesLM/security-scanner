@@ -17,8 +17,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/envexpand"
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
+	"github.com/JonasBorgesLM/warden/internal/envexpand"
+	"github.com/JonasBorgesLM/warden/internal/ports"
 )
 
 // ErrReAuthFailed is returned by Do when a request comes back 401 and the
@@ -45,7 +45,7 @@ type Credentials struct {
 }
 
 // Config mirrors the auth: section of config.yaml (see
-// doc/security-scanner-projeto.md §6). Password may contain a ${VAR}
+// doc/warden-projeto.md §6). Password may contain a ${VAR}
 // reference; New expands it from the environment so real credentials never
 // need to be committed.
 type Config struct {
@@ -63,6 +63,25 @@ type Config struct {
 	// after applying these, because the body it builds is JSON and no
 	// value here can change that.
 	ExtraHeaders map[string]string
+	// CSRF, optional, fetches a token before the login request and injects
+	// it as a header on that request only — the pre-flight ExtraHeaders
+	// cannot do, since ExtraHeaders' values are fixed at config time and a
+	// signed double-submit CSRF token is minted per run. inner must carry
+	// a cookie jar (New does not add one) for the fetch's Set-Cookie to
+	// ride along to the login request: the token alone is not the whole
+	// credential, the matching cookie is the other half.
+	CSRF *CSRFConfig
+}
+
+// CSRFConfig describes the pre-login fetch a signed double-submit cookie
+// defense needs: GET (or Method) FetchEndpoint, extract TokenPath from the
+// JSON response the same way the login response's own token is extracted,
+// and send it as TokenHeader on the login request that follows.
+type CSRFConfig struct {
+	FetchEndpoint string // resolved against baseURL, like LoginEndpoint
+	Method        string // defaults to GET
+	TokenPath     string // dot-notation, same rules as Config.TokenPath
+	TokenHeader   string // defaults to "X-CSRF-Token"
 }
 
 // Authenticator wraps a ports.HTTPClient, logging in on first use and
@@ -93,7 +112,7 @@ var _ ports.HTTPClient = (*Authenticator)(nil)
 // inner MUST be the ScopeGuard-enforcing client from
 // internal/adapters/httpclient. This package cannot verify that — the whole
 // point of ports.HTTPClient is that core code doesn't know which adapter it
-// got — so the guarantee lives at the composition root in cmd/scanner,
+// got — so the guarantee lives at the composition root in cmd/warden,
 // which is the only place allowed to construct this. Passing a bare
 // *http.Client here would silently disable the scanner's only security
 // boundary (CLAUDE.md invariant #1) without any compile or test failure.
@@ -118,6 +137,20 @@ func New(baseURL string, cfg Config, inner ports.HTTPClient) (*Authenticator, er
 	}
 	if cfg.Credentials.UsernameField == "" {
 		cfg.Credentials.UsernameField = "username"
+	}
+	if cfg.CSRF != nil {
+		if cfg.CSRF.FetchEndpoint == "" {
+			return nil, errors.New("auth: csrf.fetch_endpoint must not be empty")
+		}
+		if cfg.CSRF.TokenPath == "" {
+			return nil, errors.New("auth: csrf.token_path must not be empty")
+		}
+		if cfg.CSRF.Method == "" {
+			cfg.CSRF.Method = http.MethodGet
+		}
+		if cfg.CSRF.TokenHeader == "" {
+			cfg.CSRF.TokenHeader = "X-CSRF-Token"
+		}
 	}
 
 	password, err := envexpand.Expand(cfg.Credentials.Password)
@@ -220,6 +253,13 @@ func (a *Authenticator) login(ctx context.Context) error {
 		return fmt.Errorf("auth: build login URL: %w", err)
 	}
 
+	var csrfToken string
+	if a.cfg.CSRF != nil {
+		if csrfToken, err = a.fetchCSRFToken(ctx); err != nil {
+			return err
+		}
+	}
+
 	body, err := json.Marshal(map[string]string{
 		a.cfg.Credentials.UsernameField: a.cfg.Credentials.Username,
 		"password":                      a.cfg.Credentials.Password,
@@ -232,14 +272,17 @@ func (a *Authenticator) login(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("auth: build login request: %w", err)
 	}
-	// ExtraHeaders first, Content-Type second, so Content-Type wins. The
-	// body above is JSON and nothing here can change that, so letting a
-	// config value relabel it would produce a request whose declared type
-	// contradicts what it actually carries — and the target would reject
-	// it for a reason that points nowhere near the config line that caused
-	// it.
+	// ExtraHeaders first, CSRF second, Content-Type third, so Content-Type
+	// always wins. The body above is JSON and nothing here can change
+	// that, so letting a config value relabel it would produce a request
+	// whose declared type contradicts what it actually carries — and the
+	// target would reject it for a reason that points nowhere near the
+	// config line that caused it.
 	for k, v := range a.cfg.ExtraHeaders {
 		req.Header.Set(k, v)
+	}
+	if a.cfg.CSRF != nil {
+		req.Header.Set(a.cfg.CSRF.TokenHeader, csrfToken)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -268,6 +311,43 @@ func (a *Authenticator) login(ctx context.Context) error {
 	a.mu.Unlock()
 
 	return nil
+}
+
+// fetchCSRFToken performs the CSRF.FetchEndpoint request and extracts
+// CSRF.TokenPath from its JSON body — the header half of the credential
+// login needs. The cookie half is not read here at all: it rides in
+// a.inner's own cookie jar (New's own doc comment says the caller must
+// supply one), the same way a browser's does, and gets attached to the
+// login request automatically by net/http without this function's
+// involvement.
+func (a *Authenticator) fetchCSRFToken(ctx context.Context) (string, error) {
+	fetchURL, err := url.JoinPath(a.baseURL, a.cfg.CSRF.FetchEndpoint)
+	if err != nil {
+		return "", fmt.Errorf("auth: build csrf fetch URL: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, a.cfg.CSRF.Method, fetchURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("auth: build csrf fetch request: %w", err)
+	}
+	resp, err := a.inner.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("auth: csrf fetch request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxLoginBodyBytes))
+	if err != nil {
+		return "", fmt.Errorf("auth: read csrf fetch response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("auth: csrf fetch endpoint returned status %d: %s", resp.StatusCode, bodySnippet(data))
+	}
+
+	token, err := extractToken(data, a.cfg.CSRF.TokenPath)
+	if err != nil {
+		return "", err
+	}
+	return token, nil
 }
 
 // bodySnippet renders a short single-line excerpt of a login response for

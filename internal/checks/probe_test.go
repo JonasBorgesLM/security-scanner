@@ -13,8 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/auth"
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/auth"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 func params(names ...string) []model.Parameter {

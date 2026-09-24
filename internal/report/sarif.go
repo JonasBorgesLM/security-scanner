@@ -7,7 +7,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 // SARIF is how findings reach somewhere people already look. GitHub Code
@@ -33,7 +33,7 @@ import (
 const (
 	sarifVersion = "2.1.0"
 	sarifSchema  = "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json"
-	toolName     = "security-scanner"
+	toolName     = "warden"
 )
 
 // sarifLevel maps a severity onto the three levels Code Scanning renders.
@@ -152,7 +152,7 @@ func (d Data) WriteSARIF(w io.Writer) error {
 		Runs: []sarifRun{{
 			Tool: sarifTool{Driver: sarifDriver{
 				Name:           toolName,
-				InformationURI: "https://github.com/JonasBorgesLM/security-scanner",
+				InformationURI: "https://github.com/JonasBorgesLM/warden",
 				Rules:          rulesFor(d.Findings),
 			}},
 			Results: results,

@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
 )
 
 func init() {

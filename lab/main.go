@@ -1,6 +1,6 @@
 // Command lab-api is a deliberately vulnerable HTTP API, built only to give
-// security-scanner something of its own to scan end to end. It is not part
-// of the security-scanner module (see go.mod) and must never be deployed
+// warden something of its own to scan end to end. It is not part
+// of the warden module (see go.mod) and must never be deployed
 // anywhere but the docker-compose lab in this repository.
 //
 // It is vulnerable on purpose in four ways, one per line in checks.enabled:
@@ -9,10 +9,10 @@
 //   - every response     no security headers are ever set (missing-headers)
 //   - GET /search?term=  reflected XSS with no output encoding
 //
-// GET /search is included even though security-scanner does not yet ship
+// GET /search is included even though warden does not yet ship
 // an active xss-reflected scan check (see the parent repo's CLAUDE.md) — it
 // exists for internal/attack's xss-reflected Confirmer to be exercised
-// against by hand today, and for `scanner scan` to pick up automatically
+// against by hand today, and for `warden scan` to pick up automatically
 // once that check exists.
 package main
 

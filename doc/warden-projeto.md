@@ -9,23 +9,23 @@ A Go study tool for discovering vulnerabilities, confirming them via controlled 
 - **Restricted to your own/authorised environment.** The `ScopeGuard` (host allowlist) is mandatory and centralized in the HTTP client — no request leaves without passing through it.
 - **Non-destructive by default.** Only safe methods are tested (`GET`, test `POST`); `DELETE`/`PUT`/`PATCH` require explicit opt-in per endpoint.
 - **Gentle by design.** A worker pool + rate limiter avoid self-DoS even against your own lab.
-- **Auditable.** Each stage writes versioned JSON. A finding's **identity** is deterministic — it is what two scans are compared by; its **evidence** is descriptive and moves with the target. Byte-identical output only holds against a static target (see `doc/security-scanner-evolucao.md` §4.3).
+- **Auditable.** Each stage writes versioned JSON. A finding's **identity** is deterministic — it is what two scans are compared by; its **evidence** is descriptive and moves with the target. Byte-identical output only holds against a static target (see `doc/warden-evolucao.md` §4.3).
 
 ---
 
 ## 2. Flow (separate subcommands)
 
 ```
-scanner scan   --spec openapi.yaml --config config.yaml --out findings.json
-scanner attack --in findings.json  --config config.yaml --out confirmed.json
-scanner report --in confirmed.json --out report.html [--json report.json] [--sarif report.sarif]
-scanner diff   before.json after.json [--fail-on high]
+warden scan   --spec openapi.yaml --config config.yaml --out findings.json
+warden attack --in findings.json  --config config.yaml --out confirmed.json
+warden report --in confirmed.json --out report.html [--json report.json] [--sarif report.sarif]
+warden diff   before.json after.json [--fail-on high]
 ```
 
 - **scan** — imports routes from the OpenAPI spec, authenticates, runs checks (passive + active suspicions), writes `findings.json` (`Confirmed: false`). **Done.**
 - **attack** — reproduces each suspicion with a non-destructive proof of concept, writes `confirmed.json`. **Done** — `internal/attack`, §7 below.
 - **report** — reads `confirmed.json`, consolidates into HTML (`html/template`) + JSON, plus an optional SARIF file, with an executive summary by severity. **Done** — `internal/report`. Never touches the network: it only reads the input file and renders.
-- **diff** — compares two `findings.json`/`confirmed.json` runs by finding identity, not by file bytes, and exits `2` on a regression. **Done** — `internal/diff`; see `doc/security-scanner-evolucao.md` §4.3 and §6 (Stage 4).
+- **diff** — compares two `findings.json`/`confirmed.json` runs by finding identity, not by file bytes, and exits `2` on a regression. **Done** — `internal/diff`; see `doc/warden-evolucao.md` §4.3 and §6 (Stage 4).
 
 Intermediate files are the contract between stages: version-controllable in git, manually reviewable before `attack` runs, and runnable on different machines.
 
@@ -36,8 +36,8 @@ Intermediate files are the contract between stages: version-controllable in git,
 **Lightweight hexagonal** (`ports` / `adapters`) so checks can be tested without real network traffic.
 
 ```
-security-scanner/
-├── cmd/scanner/main.go            # CLI + composition root: scan | attack | report | diff
+warden/
+├── cmd/warden/main.go             # CLI + composition root: scan | attack | report | diff
 ├── internal/
 │   ├── ports/                     # interfaces: HTTPClient
 │   ├── adapters/
@@ -70,7 +70,7 @@ security-scanner/
 └── testdata/                      # fake specs and responses for tests
 ```
 
-**Composition root.** `cmd/scanner` is the only place that chooses concrete adapters.
+**Composition root.** `cmd/warden` is the only place that chooses concrete adapters.
 Packages under `core/` receive a `ports.HTTPClient` and, by construction, cannot
 verify which implementation they got — so the guarantee that everyone received the
 client with `ScopeGuard` lives there, and only there. Handing a raw `*http.Client` to
@@ -286,7 +286,7 @@ run.
 
 If the config **validates** (an absent `auth` block is valid), the question only the
 spec can answer remains: does the target *need* auth? That cross-check lives in
-`cmd/scanner` (`runScan`/`runAttack`), not in `config`: the `Authenticator` is only
+`cmd/warden` (`runScan`/`runAttack`), not in `config`: the `Authenticator` is only
 built when there is an endpoint with `RequiresAuth`, and if a protected route exists
 with no `auth` block configured, the stage fails with a clear message instead of
 scanning the route without authentication.

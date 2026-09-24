@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/adapters/httpclient"
-	"github.com/JonasBorgesLM/security-scanner/internal/core/model"
-	"github.com/JonasBorgesLM/security-scanner/internal/core/scope"
+	"github.com/JonasBorgesLM/warden/internal/adapters/httpclient"
+	"github.com/JonasBorgesLM/warden/internal/core/model"
+	"github.com/JonasBorgesLM/warden/internal/core/scope"
 )
 
 // scopedClient builds the real ScopeGuard-enforcing client allowing only

@@ -6,14 +6,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
-	"github.com/JonasBorgesLM/security-scanner/internal/envexpand"
-	"github.com/JonasBorgesLM/security-scanner/internal/ports"
+	"github.com/JonasBorgesLM/warden/internal/envexpand"
+	"github.com/JonasBorgesLM/warden/internal/ports"
 )
 
 // fakeAPI simulates a lab API with a /login endpoint and a /protected
@@ -723,4 +724,127 @@ func TestLogin_ExtraHeaders_OtherHeadersStillApply(t *testing.T) {
 	if want := "Bearer bootstrap"; gotBootstrap != want {
 		t.Errorf("Authorization on the login request = %q, want %q", gotBootstrap, want)
 	}
+}
+
+// newDoubleSubmitCSRFServer simulates the signed double-submit cookie
+// pattern task-api's moat/csrf uses: GET /csrf-token sets a cookie and
+// returns the same value in the body; POST /login (and any other mutating
+// request) is rejected unless the caller both presents that cookie and
+// echoes its value in X-CSRF-Token — the two must match, not just the
+// header be present, which is what ExtraHeaders alone cannot satisfy: the
+// value is only known after a prior request, and the cookie half needs a
+// jar to ride along to the next one.
+func newDoubleSubmitCSRFServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/csrf-token", func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "csrf", Value: "secret-cookie-value", Path: "/"})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"csrf_token": "secret-cookie-value"})
+	})
+	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie("csrf")
+		if err != nil || r.Header.Get("X-CSRF-Token") != cookie.Value {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"error":"CSRF verification failed"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"token": "issued-token"})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestLogin_WithoutCSRF_FailsAgainstADoubleSubmitCookieEndpoint is the
+// negative control for the CSRF pre-fetch feature: without it, nothing
+// ever visits /csrf-token, so no cookie exists to send and login is
+// rejected — even with http.DefaultClient's cookie jar disabled reproduces
+// the same failure ExtraHeaders alone cannot fix (a static header value
+// configured in advance can never equal a token minted per-run).
+func TestLogin_WithoutCSRF_FailsAgainstADoubleSubmitCookieEndpoint(t *testing.T) {
+	srv := newDoubleSubmitCSRFServer(t)
+	cfg := Config{LoginEndpoint: "/login", TokenPath: "token"}
+	a, err := New(srv.URL, cfg, http.DefaultClient)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := a.Authenticate(t.Context()); err == nil {
+		t.Fatal("Authenticate() = nil error, want one — nothing ever fetched the CSRF cookie/token")
+	}
+}
+
+// TestLogin_CSRF_FetchesTokenAndCookieBeforeLogin proves the fix: a CSRF
+// pre-fetch step, through a cookie-jar-carrying client, lets login succeed
+// against the same server the control above could not reach.
+func TestLogin_CSRF_FetchesTokenAndCookieBeforeLogin(t *testing.T) {
+	srv := newDoubleSubmitCSRFServer(t)
+	jarClient := &http.Client{Jar: mustCookieJar(t)}
+	cfg := Config{
+		LoginEndpoint: "/login",
+		TokenPath:     "token",
+		CSRF: &CSRFConfig{
+			FetchEndpoint: "/csrf-token",
+			TokenPath:     "csrf_token",
+			TokenHeader:   "X-CSRF-Token",
+		},
+	}
+	a, err := New(srv.URL, cfg, jarClient)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := a.Authenticate(t.Context()); err != nil {
+		t.Fatalf("Authenticate() unexpected error = %v", err)
+	}
+	if got := a.Token(); got != "issued-token" {
+		t.Errorf("Token() = %q, want %q", got, "issued-token")
+	}
+}
+
+// TestLogin_CSRF_DefaultsMethodAndHeader proves CSRFConfig's Method and
+// TokenHeader defaults (GET, X-CSRF-Token) without setting either.
+func TestLogin_CSRF_DefaultsMethodAndHeader(t *testing.T) {
+	srv := newDoubleSubmitCSRFServer(t)
+	jarClient := &http.Client{Jar: mustCookieJar(t)}
+	cfg := Config{
+		LoginEndpoint: "/login",
+		TokenPath:     "token",
+		CSRF: &CSRFConfig{
+			FetchEndpoint: "/csrf-token",
+			TokenPath:     "csrf_token",
+		},
+	}
+	a, err := New(srv.URL, cfg, jarClient)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := a.Authenticate(t.Context()); err != nil {
+		t.Fatalf("Authenticate() unexpected error = %v", err)
+	}
+}
+
+// TestLogin_CSRF_MissingTokenPathIsRejectedAtConstruction mirrors New's
+// existing required-field checks: a CSRF block with no TokenPath is a
+// half-written config, not "no CSRF", the same reasoning
+// TestNew_RejectsMissingRequiredFields already applies to the outer block.
+func TestLogin_CSRF_MissingTokenPathIsRejectedAtConstruction(t *testing.T) {
+	cfg := Config{
+		LoginEndpoint: "/login",
+		TokenPath:     "token",
+		Credentials:   Credentials{Username: "u", Password: "p"},
+		CSRF:          &CSRFConfig{FetchEndpoint: "/csrf-token"},
+	}
+	if _, err := New("http://example.invalid", cfg, http.DefaultClient); err == nil {
+		t.Fatal("New() error = nil, want one — csrf.token_path is required when csrf.fetch_endpoint is set")
+	}
+}
+
+func mustCookieJar(t *testing.T) http.CookieJar {
+	t.Helper()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookiejar.New() error = %v", err)
+	}
+	return jar
 }
