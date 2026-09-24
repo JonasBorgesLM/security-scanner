@@ -1,0 +1,23 @@
+# A complete auth block, but a half-written csrf sub-block: fetch_endpoint
+# without token_path. Same reasoning as partial-auth.yaml, one level down —
+# Load must reject it and name what is missing, not read it as "no CSRF
+# fetch configured".
+schema_version: 1
+target:
+  base_url: http://localhost:8080
+scope:
+  allowed_hosts: ["localhost:8080"]
+auth:
+  login_endpoint: /login
+  token_path: token
+  credentials:
+    username: lab-user
+    password: lab-pass
+  csrf:
+    fetch_endpoint: /csrf-token
+engine:
+  max_concurrency: 5
+  requests_per_second: 10
+  timeout: 5m
+checks:
+  enabled: [missing-headers]

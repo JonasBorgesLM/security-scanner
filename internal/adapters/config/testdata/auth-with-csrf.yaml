@@ -1,0 +1,24 @@
+# A complete auth block with a complete csrf sub-block — the shape
+# task-api's signed double-submit cookie login needs.
+schema_version: 1
+target:
+  base_url: http://localhost:8080
+scope:
+  allowed_hosts: ["localhost:8080"]
+auth:
+  login_endpoint: /v1/auth/login
+  token_path: token
+  credentials:
+    username: lab-user
+    password: lab-pass
+    username_field: email
+  csrf:
+    fetch_endpoint: /v1/auth/csrf-token
+    token_path: csrf_token
+    token_header: X-CSRF-Token
+engine:
+  max_concurrency: 5
+  requests_per_second: 10
+  timeout: 5m
+checks:
+  enabled: [missing-headers]

@@ -304,6 +304,39 @@ func TestLoad_AuthWithOnlyUsernameField(t *testing.T) {
 	}
 }
 
+// TestLoad_AuthCSRFHalfWritten is TestLoad_AuthWithOnlyUsernameField's
+// sibling one level down: a csrf: block with fetch_endpoint but no
+// token_path is a typo, not "no CSRF fetch", and must be rejected by name.
+func TestLoad_AuthCSRFHalfWritten(t *testing.T) {
+	_, err := Load("testdata/auth-csrf-half-written.yaml")
+	if err == nil {
+		t.Fatal("Load() error = nil, want a half-written csrf block to be rejected")
+	}
+	if !strings.Contains(err.Error(), "auth.csrf.token_path") {
+		t.Errorf("error = %q, want it to name auth.csrf.token_path", err)
+	}
+}
+
+// TestLoad_AuthWithCSRF proves a complete csrf: block loads and maps onto
+// config.Auth.CSRF with every field, not just enough to satisfy validation.
+func TestLoad_AuthWithCSRF(t *testing.T) {
+	cfg, err := Load("testdata/auth-with-csrf.yaml")
+	if err != nil {
+		t.Fatalf("Load() unexpected error = %v", err)
+	}
+	if cfg.Auth.CSRF == nil {
+		t.Fatal("Auth.CSRF = nil, want it populated")
+	}
+	want := CSRF{
+		FetchEndpoint: "/v1/auth/csrf-token",
+		TokenPath:     "csrf_token",
+		TokenHeader:   "X-CSRF-Token",
+	}
+	if *cfg.Auth.CSRF != want {
+		t.Errorf("Auth.CSRF = %+v, want %+v", *cfg.Auth.CSRF, want)
+	}
+}
+
 func TestLoad_AuthWithOnlyExtraHeaders(t *testing.T) {
 	_, err := Load("testdata/auth-only-extra-headers.yaml")
 	if err == nil {

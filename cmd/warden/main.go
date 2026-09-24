@@ -13,6 +13,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
+	"net/http/cookiejar"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -53,6 +55,27 @@ func requestTimeout(cfg *config.Config) time.Duration {
 		return d
 	}
 	return defaultRequestTimeout
+}
+
+// newCookieJarClient returns an *http.Client carrying an empty cookie jar,
+// handed to httpclient.New so the jar sits underneath the ScopeGuard rather
+// than replacing it — httpclient.New never mutates a supplied client in
+// place (its own doc comment), so this is safe to build fresh per stage.
+// A jar is harmless for a target that sets no cookies (auth.CSRFConfig is
+// the only thing in this codebase that currently needs one: the
+// double-submit cookie pattern where a login response's own token must be
+// echoed alongside the cookie a prior request set) and required for one
+// that does, so it is always on rather than config-gated. cookiejar.New's
+// signature can return an error; its current implementation with a nil
+// Options never does, but the error is not discarded — an infallible-in-
+// practice call still failing would otherwise surface as a nil-jar client
+// silently dropping every cookie, far from this line.
+func newCookieJarClient() (*http.Client, error) {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, fmt.Errorf("build cookie jar: %w", err)
+	}
+	return &http.Client{Jar: jar}, nil
 }
 
 func main() {
@@ -149,7 +172,11 @@ func runScan(args []string) error {
 	// including the Authenticator's own login request — goes through this
 	// one client, so no code path can bypass the allowlist.
 	guard := scope.NewScopeGuard(cfg.Scope.AllowedHosts)
-	client := httpclient.New(guard, nil, requestTimeout(cfg))
+	jarClient, err := newCookieJarClient()
+	if err != nil {
+		return err
+	}
+	client := httpclient.New(guard, jarClient, requestTimeout(cfg))
 
 	// Resolve the enabled checks before spending a single request: a typo in
 	// checks.enabled should fail immediately, not after a full collection.
@@ -422,7 +449,11 @@ func runAttack(args []string) error {
 	// Same boundary as scan: the ScopeGuard-wrapped client is the only path
 	// to the network, for a Confirmer exactly as much as for a check.
 	guard := scope.NewScopeGuard(cfg.Scope.AllowedHosts)
-	client := httpclient.New(guard, nil, requestTimeout(cfg))
+	jarClient, err := newCookieJarClient()
+	if err != nil {
+		return err
+	}
+	client := httpclient.New(guard, jarClient, requestTimeout(cfg))
 
 	// Only wire in auth when a finding sits on a protected route — same
 	// optional-auth rule as scan. A findings.json full of public routes needs
@@ -720,7 +751,7 @@ func secondaryClient(ctx context.Context, cfg *config.Config, client ports.HTTPC
 // seam between them. ${VAR} references were already expanded by
 // config.Load, so auth.New's own expansion pass is a no-op here.
 func authConfig(cfg *config.Config) auth.Config {
-	return auth.Config{
+	ac := auth.Config{
 		LoginEndpoint: cfg.Auth.LoginEndpoint,
 		Method:        cfg.Auth.Method,
 		Credentials: auth.Credentials{
@@ -733,6 +764,15 @@ func authConfig(cfg *config.Config) auth.Config {
 		ExtraHeaders: cfg.Auth.ExtraHeaders,
 		TokenPrefix:  cfg.Auth.TokenPrefix,
 	}
+	if cfg.Auth.CSRF != nil {
+		ac.CSRF = &auth.CSRFConfig{
+			FetchEndpoint: cfg.Auth.CSRF.FetchEndpoint,
+			Method:        cfg.Auth.CSRF.Method,
+			TokenPath:     cfg.Auth.CSRF.TokenPath,
+			TokenHeader:   cfg.Auth.CSRF.TokenHeader,
+		}
+	}
+	return ac
 }
 
 func countRequiringAuth(endpoints []model.Endpoint) int {

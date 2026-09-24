@@ -91,6 +91,20 @@ type Auth struct {
 	// through the same endpoint with the same token handling, so repeating
 	// any of that would be an invitation to let the two drift apart.
 	SecondaryCredentials Credentials `yaml:"secondary_credentials"`
+	// CSRF, optional: a pre-login fetch for a signed double-submit cookie
+	// defense (see auth.CSRFConfig). Nil is the common case — a target
+	// whose login accepts credentials directly needs nothing here.
+	CSRF *CSRF `yaml:"csrf"`
+}
+
+// CSRF mirrors auth.CSRFConfig; see its own doc comment for what each
+// field does. All-or-nothing like Auth itself: FetchEndpoint and
+// TokenPath are required together, Method/TokenHeader default.
+type CSRF struct {
+	FetchEndpoint string `yaml:"fetch_endpoint"`
+	Method        string `yaml:"method"`
+	TokenPath     string `yaml:"token_path"`
+	TokenHeader   string `yaml:"token_header"`
 }
 
 // HasSecondary reports whether a second account was supplied.
@@ -118,7 +132,8 @@ func (a Auth) anyFieldSet() bool {
 		a.TokenHeader != "" ||
 		a.TokenPrefix != "" ||
 		a.Credentials.UsernameField != "" ||
-		len(a.ExtraHeaders) > 0
+		len(a.ExtraHeaders) > 0 ||
+		a.CSRF != nil
 }
 
 // Engine tunes the worker pool + rate limiter that drive active checks.
@@ -365,6 +380,16 @@ func (c *Config) validateAuth(errs *validationErrors) {
 		}
 		if c.Auth.SecondaryCredentials.Username == c.Auth.Credentials.Username {
 			errs.add("auth.secondary_credentials.username is the same account as auth.credentials.username; a check that compares two users would compare one with itself")
+		}
+	}
+	// Same all-or-nothing rule as the outer block: a csrf: section with
+	// fetch_endpoint but no token_path is a typo, not "no CSRF fetch".
+	if c.Auth.CSRF != nil {
+		if c.Auth.CSRF.FetchEndpoint == "" {
+			errs.add("auth.csrf.fetch_endpoint is required when auth.csrf is set")
+		}
+		if c.Auth.CSRF.TokenPath == "" {
+			errs.add("auth.csrf.token_path is required when auth.csrf is set")
 		}
 	}
 }
