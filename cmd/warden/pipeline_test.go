@@ -1506,3 +1506,124 @@ func TestDiff_RequiresTwoFiles(t *testing.T) {
 		t.Error("a usage error came back as a regression; CI would report the target got worse")
 	}
 }
+
+// newSessionLeakServer simulates a target with dual-mode auth, exactly the
+// shape task-api's own login has: /login sets a session cookie *and*
+// returns a bearer token, and /secure accepts either — a real target this
+// codebase was written against, not a hypothetical. It exists to prove
+// engine.New's "anonymous" identity (cmd/warden's client variable, passed
+// as anonymous — see runScan/runAttack's own comments on why it is the
+// same client rather than a second one) never carries a cookie the login
+// exchange set, regardless of how login authenticates.
+func newSessionLeakServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "session", Value: "leaked-session"})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"token": "tok"})
+	})
+	mux.HandleFunc("/secure", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer tok" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if c, err := r.Cookie("session"); err == nil && c.Value == "leaked-session" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func writeAuthRequiredSpec(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "openapi.yaml")
+	spec := `openapi: 3.0.3
+info: {title: Lab, version: "1.0"}
+security:
+  - bearerAuth: []
+paths:
+  /secure:
+    get:
+      responses: {"200": {description: OK}}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer}
+`
+	if err := os.WriteFile(path, []byte(spec), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
+}
+
+func writeAuthRequiredConfig(t *testing.T, dir, baseURL string) string {
+	t.Helper()
+	host := strings.TrimPrefix(baseURL, "http://")
+	path := filepath.Join(dir, "config.yaml")
+	cfg := fmt.Sprintf(`schema_version: 1
+target:
+  base_url: %s
+scope:
+  allowed_hosts: ["%s"]
+auth:
+  login_endpoint: /login
+  credentials:
+    username: admin
+    password: ${SCANNER_IT_PASSWORD}
+  token_path: token
+  token_prefix: "Bearer "
+engine:
+  max_concurrency: 4
+  requests_per_second: 500
+  timeout: 30s
+  test_destructive: false
+checks:
+  enabled: [auth-required]
+`, baseURL, host)
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return path
+}
+
+// TestScan_AnonymousClientDoesNotCarryTheLoginSessionCookie is the negative
+// control and the fix, in one test: against newSessionLeakServer, an
+// anonymous identity that leaked the login's session cookie would get 200
+// from /secure with no Authorization header at all — auth-required would
+// then report /secure as "does not require authentication", which is
+// false: it rejects a request that genuinely carries neither credential.
+// A target with dual cookie/bearer auth (task-api's own shape) is exactly
+// where this would otherwise go unnoticed, since the false finding and a
+// real one look identical in the report.
+func TestScan_AnonymousClientDoesNotCarryTheLoginSessionCookie(t *testing.T) {
+	t.Setenv("SCANNER_IT_PASSWORD", "lab-pass")
+
+	srv := newSessionLeakServer(t)
+	dir := t.TempDir()
+	specPath := writeAuthRequiredSpec(t, dir)
+	configPath := writeAuthRequiredConfig(t, dir, srv.URL)
+	outPath := filepath.Join(dir, "findings.json")
+
+	if err := runScan([]string{"--spec", specPath, "--config", configPath, "--out", outPath}); err != nil {
+		t.Fatalf("runScan() error = %v", err)
+	}
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var out model.FindingsFile
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("findings.json is not valid JSON: %v", err)
+	}
+
+	for _, f := range out.Findings {
+		if f.CheckName == "auth-required" && f.Endpoint.Path == "/secure" {
+			t.Fatalf("auth-required reported /secure as unauthenticated-reachable — the anonymous client leaked the login's session cookie; finding: %+v", f)
+		}
+	}
+}
