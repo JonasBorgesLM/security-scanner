@@ -70,12 +70,21 @@ func requestTimeout(cfg *config.Config) time.Duration {
 // Options never does, but the error is not discarded — an infallible-in-
 // practice call still failing would otherwise surface as a nil-jar client
 // silently dropping every cookie, far from this line.
-func newCookieJarClient() (*http.Client, error) {
+// newAuthHTTPClient returns a ScopeGuard-wrapped client with its own fresh
+// cookie jar, for one identity's login exchange (auth.New's inner) — never
+// shared with the anonymous client or with another identity's own login.
+// The jar is what carries a session cookie a target's login sets alongside
+// its bearer token (task-api's own dual cookie/bearer auth) or what
+// auth.CSRFConfig's pre-login fetch needs (its Set-Cookie must reach the
+// login request that follows, in the same client). httpclient.New never
+// mutates a supplied client in place (its own doc comment), so a fresh one
+// per identity is cheap and cannot leak state between them.
+func newAuthHTTPClient(guard *scope.ScopeGuard, cfg *config.Config) (*httpclient.Client, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, fmt.Errorf("build cookie jar: %w", err)
 	}
-	return &http.Client{Jar: jar}, nil
+	return httpclient.New(guard, &http.Client{Jar: jar}, requestTimeout(cfg)), nil
 }
 
 func main() {
@@ -172,11 +181,15 @@ func runScan(args []string) error {
 	// including the Authenticator's own login request — goes through this
 	// one client, so no code path can bypass the allowlist.
 	guard := scope.NewScopeGuard(cfg.Scope.AllowedHosts)
-	jarClient, err := newCookieJarClient()
-	if err != nil {
-		return err
-	}
-	client := httpclient.New(guard, jarClient, requestTimeout(cfg))
+	// No cookie jar here: this is the client every identity below is built
+	// from or compared against, including the one passed to engine.New as
+	// anonymous — a jar on it would let a cookie set during any login ride
+	// along on a request that is supposed to carry no credential at all
+	// (found scanning task-api itself: auth-required reported a genuinely
+	// protected route as open, because the login's session cookie leaked
+	// onto the "anonymous" probe). Each identity that logs in gets its own
+	// jar-carrying client below instead.
+	client := httpclient.New(guard, nil, requestTimeout(cfg))
 
 	// Resolve the enabled checks before spending a single request: a typo in
 	// checks.enabled should fail immediately, not after a full collection.
@@ -195,7 +208,11 @@ func runScan(args []string) error {
 			return fmt.Errorf("scan: %d endpoint(s) require authentication but config.yaml has no auth block; add one or scan a spec with no protected routes",
 				countRequiringAuth(endpoints))
 		}
-		authenticator, err := auth.New(cfg.Target.BaseURL, authConfig(cfg), client)
+		authClient, err := newAuthHTTPClient(guard, cfg)
+		if err != nil {
+			return err
+		}
+		authenticator, err := auth.New(cfg.Target.BaseURL, authConfig(cfg), authClient)
 		if err != nil {
 			return err
 		}
@@ -222,7 +239,7 @@ func runScan(args []string) error {
 	// A second account only when config.yaml supplies one. Nil is the
 	// signal a check reads to say "no second user was configured" instead
 	// of comparing a user with itself.
-	secondary, err := secondaryClient(ctx, cfg, client)
+	secondary, err := secondaryClient(ctx, cfg, guard)
 	if err != nil {
 		return err
 	}
@@ -449,11 +466,9 @@ func runAttack(args []string) error {
 	// Same boundary as scan: the ScopeGuard-wrapped client is the only path
 	// to the network, for a Confirmer exactly as much as for a check.
 	guard := scope.NewScopeGuard(cfg.Scope.AllowedHosts)
-	jarClient, err := newCookieJarClient()
-	if err != nil {
-		return err
-	}
-	client := httpclient.New(guard, jarClient, requestTimeout(cfg))
+	// See runScan's identical comment: no jar on the shared/anonymous
+	// client, only on the one built for whichever identity logs in.
+	client := httpclient.New(guard, nil, requestTimeout(cfg))
 
 	// Only wire in auth when a finding sits on a protected route — same
 	// optional-auth rule as scan. A findings.json full of public routes needs
@@ -464,7 +479,11 @@ func runAttack(args []string) error {
 			return fmt.Errorf("attack: %d finding(s) are on endpoints that require authentication but config.yaml has no auth block; add one to reproduce them",
 				countFindingsRequiringAuth(in.Findings))
 		}
-		authenticator, err := auth.New(cfg.Target.BaseURL, authConfig(cfg), client)
+		authClient, err := newAuthHTTPClient(guard, cfg)
+		if err != nil {
+			return err
+		}
+		authenticator, err := auth.New(cfg.Target.BaseURL, authConfig(cfg), authClient)
 		if err != nil {
 			return err
 		}
@@ -479,7 +498,7 @@ func runAttack(args []string) error {
 	// rate limiter the engine uses internally — and, as there, one budget
 	// shared by both identities. `client` is the guarded client with no
 	// Authenticator above it, so it is the anonymous one.
-	secondary, err := secondaryClient(ctx, cfg, client)
+	secondary, err := secondaryClient(ctx, cfg, guard)
 	if err != nil {
 		return err
 	}
@@ -723,7 +742,7 @@ func runDiff(args []string) error {
 // credentials should fail here with a clear message rather than as a wave
 // of skipped routes later. It reuses everything about the first account's
 // login except the credentials themselves, so the two cannot drift.
-func secondaryClient(ctx context.Context, cfg *config.Config, client ports.HTTPClient) (ports.HTTPClient, error) {
+func secondaryClient(ctx context.Context, cfg *config.Config, guard *scope.ScopeGuard) (ports.HTTPClient, error) {
 	if !cfg.Auth.HasSecondary() {
 		return nil, nil
 	}
@@ -735,7 +754,17 @@ func secondaryClient(ctx context.Context, cfg *config.Config, client ports.HTTPC
 		UsernameField: cfg.Auth.Credentials.UsernameField,
 	}
 
-	a, err := auth.New(cfg.Target.BaseURL, second, client)
+	// Its own jar-carrying client, never the primary account's: sharing one
+	// would let whichever account logs in second pick up the first
+	// account's session cookie (dual cookie/bearer auth — see
+	// newAuthHTTPClient), which is exactly the identity confusion idor
+	// exists to rule out, not something it should have to tolerate from
+	// its own transport.
+	authClient, err := newAuthHTTPClient(guard, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("secondary account: %w", err)
+	}
+	a, err := auth.New(cfg.Target.BaseURL, second, authClient)
 	if err != nil {
 		return nil, fmt.Errorf("secondary account: %w", err)
 	}
